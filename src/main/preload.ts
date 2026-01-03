@@ -62,6 +62,25 @@ const electronApi: ElectronApi = {
     
     getHistory: (limit?: number) =>
       ipcRenderer.invoke(IPC_CHANNELS.IMPORT_GET_HISTORY, limit),
+    
+    // CSV Import (Two-Step Wizard)
+    csvReadFile: (filePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMPORT_CSV_READ_FILE, filePath),
+    
+    csvParse: (content: string, options?: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMPORT_CSV_PARSE, content, options),
+    
+    csvValidate: (parsedData: any, mapping: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMPORT_CSV_VALIDATE, parsedData, mapping),
+    
+    csvExecute: (config: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMPORT_CSV_EXECUTE, config),
+    
+    csvGetSuppliers: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMPORT_CSV_GET_SUPPLIERS),
+    
+    csvAnalyzeDuplicates: (parsedData: any, mapping: any, supplierName: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMPORT_CSV_ANALYZE_DUPLICATES, parsedData, mapping, supplierName),
   },
 
   // ===========================================
@@ -147,6 +166,32 @@ const electronApi: ElectronApi = {
     
     showMessage: (options: any) =>
       ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SHOW_MESSAGE, options),
+  },
+
+  // ===========================================
+  // OPERATIONS LOG API
+  // ===========================================
+  operations: {
+    getList: (page?: number, pageSize?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPERATIONS_GET_LIST, page, pageSize),
+    
+    getById: (operationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPERATIONS_GET_BY_ID, operationId),
+    
+    abandon: (operationId: string, reason?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPERATIONS_ABANDON, operationId, reason),
+    
+    getIncomplete: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPERATIONS_GET_INCOMPLETE),
+    
+    finalizePending: (operationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPERATIONS_FINALIZE_PENDING, operationId),
+    
+    abandonPending: (operationId: string, reason?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPERATIONS_ABANDON_PENDING, operationId, reason),
+    
+    getStats: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPERATIONS_GET_STATS),
   },
 };
 

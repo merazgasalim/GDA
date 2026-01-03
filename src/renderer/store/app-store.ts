@@ -12,7 +12,6 @@ import type {
   QueryParams,
   PaginatedResult,
   ColumnConfig,
-  DEFAULT_COLUMNS,
   ColumnFilter,
 } from '../../shared/types';
 import { DEFAULT_LICENSE_STATUS } from '../../shared/types';
@@ -48,6 +47,11 @@ interface AppState {
   isLicenseModalOpen: boolean;
   isExportModalOpen: boolean;
   isColumnSettingsOpen: boolean;
+  isOperationsLogOpen: boolean;
+  
+  // Operations Log - Crash Recovery
+  hasIncompleteOperations: boolean;
+  incompleteOperationsResolved: boolean;
   
   // Stats
   stats: {
@@ -96,6 +100,10 @@ interface AppActions {
   openExportModal: () => void;
   closeExportModal: () => void;
   toggleColumnSettings: () => void;
+  openOperationsLog: () => void;
+  closeOperationsLog: () => void;
+  setHasIncompleteOperations: (has: boolean) => void;
+  setIncompleteOperationsResolved: (resolved: boolean) => void;
   
   // Stats
   fetchStats: () => Promise<void>;
@@ -137,6 +145,11 @@ const initialState: AppState = {
   isLicenseModalOpen: false,
   isExportModalOpen: false,
   isColumnSettingsOpen: false,
+  isOperationsLogOpen: false,
+  
+  // Operations Log - Crash Recovery
+  hasIncompleteOperations: false,
+  incompleteOperationsResolved: false,
   
   stats: null,
 };
@@ -313,6 +326,14 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
   closeExportModal: () => set({ isExportModalOpen: false }),
   
   toggleColumnSettings: () => set({ isColumnSettingsOpen: !get().isColumnSettingsOpen }),
+  
+  // Operations Log Modal
+  openOperationsLog: () => set({ isOperationsLogOpen: true }),
+  closeOperationsLog: () => set({ isOperationsLogOpen: false }),
+  
+  // Incomplete Operations Dialog
+  setHasIncompleteOperations: (has) => set({ hasIncompleteOperations: has }),
+  setIncompleteOperationsResolved: (resolved) => set({ incompleteOperationsResolved: resolved }),
 
   // ===========================================
   // STATS ACTIONS

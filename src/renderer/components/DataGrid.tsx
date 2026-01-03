@@ -27,7 +27,7 @@ interface ColumnFilterProps {
   onChange: (value: string) => void;
 }
 
-const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column, value, onChange }) => {
+const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value, onChange }) => {
   const [localValue, setLocalValue] = useState(value);
   
   const debouncedOnChange = useCallback(

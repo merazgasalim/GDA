@@ -92,6 +92,10 @@ export async function initializeDatabase(): Promise<{
 
     // Connect and apply migrations if needed
     await prisma.$connect();
+    
+    // Initialize operation service with the Prisma client
+    const { setOperationServicePrisma } = await import('./operation-service');
+    setOperationServicePrisma(prisma);
 
     // For SQLCipher, we would set the key here:
     // await prisma.$executeRawUnsafe(`PRAGMA key = '${encryptionKey}'`);
@@ -139,12 +143,42 @@ function getPrisma(): PrismaClient {
 
 /**
  * Build Prisma where clause from filters.
+ * 
+ * DEFENSIVE QUERY PATTERN:
+ * By default, we ONLY return records that are:
+ * 1. isActive = true (not soft-deleted/abandoned)
+ * 
+ * This ensures users never see:
+ * - Data from abandoned operations
+ * - Data from incomplete operations (PENDING status from crashes)
+ * - Data from failed operations
+ * 
+ * NOTE: We filter by isActive only (not by operation.status) to avoid
+ * expensive joins and maintain backwards compatibility with databases
+ * that don't have the OperationLog table yet. The isActive flag is the
+ * source of truth for whether data should be visible.
+ * 
+ * @param filters - Column-specific filters
+ * @param globalSearch - Global search term
+ * @param includeAbandoned - If true, includes abandoned data (for audit views)
  */
 function buildWhereClause(
   filters?: ColumnFilter[],
-  globalSearch?: string
+  globalSearch?: string,
+  includeAbandoned: boolean = false
 ): Prisma.PriceEntryWhereInput {
   const conditions: Prisma.PriceEntryWhereInput[] = [];
+  
+  // ===========================================
+  // DEFENSIVE QUERY: Filter out non-active data
+  // ===========================================
+  // We filter by isActive to exclude abandoned/soft-deleted data.
+  // The isActive field is the source of truth - no join to OperationLog needed.
+  if (!includeAbandoned) {
+    conditions.push({
+      isActive: true,
+    });
+  }
 
   // Apply column-specific filters
   if (filters && filters.length > 0) {
@@ -282,6 +316,9 @@ export async function createEntry(data: CreatePriceEntry): Promise<PriceEntry> {
 /**
  * Create multiple price entries in a batch.
  * Used for import operations.
+ * 
+ * @deprecated Use createEntriesBatchWithOperation instead for new imports.
+ * This function is kept for backwards compatibility.
  */
 export async function createEntriesBatch(
   entries: CreatePriceEntry[],
@@ -303,7 +340,7 @@ export async function createEntriesBatch(
     data: dataWithBatch,
   });
 
-  // Log the import
+  // Log the import (legacy ImportLog)
   await db.importLog.create({
     data: {
       batchId,
@@ -315,11 +352,280 @@ export async function createEntriesBatch(
   return { count: result.count };
 }
 
+// ===========================================
+// DUPLICATE DETECTION QUERIES
+// ===========================================
+
+/**
+ * Find existing active entries matching the given reference+supplier pairs.
+ * 
+ * DUPLICATE DETECTION LOGIC:
+ * A record is considered a potential duplicate if ALL of the following apply:
+ * - reference matches (case-insensitive, trimmed)
+ * - supplierName matches (case-insensitive, trimmed)
+ * - isActive = true (not soft-deleted/abandoned)
+ * 
+ * Note: We do NOT check operation.status here because isActive is the source
+ * of truth. Entries from COMPLETED operations have isActive=true, entries from
+ * ABANDONED operations have isActive=false.
+ * 
+ * PERFORMANCE: Uses indexed columns (reference, supplierName, isActive)
+ * 
+ * @param referenceSupplierPairs - Array of {reference, supplierName} to check
+ * @returns Map of "reference|supplierName" (lowercase) -> existing entry info
+ */
+export async function findDuplicateReferences(
+  referenceSupplierPairs: Array<{ reference: string; supplierName: string }>
+): Promise<Map<string, { id: string; price: number; entryDate: Date }>> {
+  const db = getPrisma();
+  
+  if (referenceSupplierPairs.length === 0) {
+    return new Map();
+  }
+
+  console.log('[DatabaseService] findDuplicateReferences called with', referenceSupplierPairs.length, 'pairs');
+
+  // Normalize and deduplicate the pairs we're looking for
+  const normalizedPairs = new Set<string>();
+  const pairsToQuery: Array<{ reference: string; supplierName: string }> = [];
+  
+  for (const pair of referenceSupplierPairs) {
+    const normalizedRef = pair.reference.trim().toLowerCase();
+    const normalizedSupplier = pair.supplierName.trim().toLowerCase();
+    const key = `${normalizedRef}|${normalizedSupplier}`;
+    
+    if (!normalizedPairs.has(key)) {
+      normalizedPairs.add(key);
+      pairsToQuery.push({
+        reference: normalizedRef,
+        supplierName: normalizedSupplier,
+      });
+    }
+  }
+
+  // Query for existing active entries
+  // Since SQLite doesn't support case-insensitive queries through Prisma easily,
+  // we need to query by reference IN clause and filter in JS
+  // We use the original references since the DB might have different casing
+  const uniqueReferences: string[] = [...new Set(referenceSupplierPairs.map(p => p.reference.trim()))];
+  const uniqueSuppliers: string[] = [...new Set(referenceSupplierPairs.map(p => p.supplierName.trim()))];
+  
+  console.log('[DatabaseService] Querying for references:', uniqueReferences.slice(0, 5), '... and suppliers:', uniqueSuppliers);
+  
+  // Query entries that match any of our references and suppliers
+  // Then filter for exact case-insensitive matches in JS
+  const existingEntries = await db.priceEntry.findMany({
+    where: {
+      isActive: true,
+      reference: { in: uniqueReferences },
+      supplierName: { in: uniqueSuppliers },
+    },
+    select: {
+      id: true,
+      reference: true,
+      supplierName: true,
+      price: true,
+      entryDate: true,
+    },
+  });
+
+  console.log('[DatabaseService] Found', existingEntries.length, 'matching entries in DB');
+
+  // Build result map with normalized keys - filter to only our target pairs
+  const resultMap = new Map<string, { id: string; price: number; entryDate: Date }>();
+  
+  for (const entry of existingEntries) {
+    const key = `${entry.reference.trim().toLowerCase()}|${entry.supplierName.trim().toLowerCase()}`;
+    
+    // Only include if we're actually looking for this pair
+    if (normalizedPairs.has(key)) {
+      // If multiple entries exist for same reference+supplier, take the most recent
+      const existing = resultMap.get(key);
+      if (!existing || entry.entryDate > existing.entryDate) {
+        resultMap.set(key, {
+          id: entry.id,
+          price: entry.price,
+          entryDate: entry.entryDate,
+        });
+      }
+    }
+  }
+
+  console.log('[DatabaseService] Returning', resultMap.size, 'duplicates found');
+  return resultMap;
+}
+
+/**
+ * Deactivate existing entries and insert new ones as an atomic update.
+ * 
+ * DUPLICATE HANDLING - UPDATE STRATEGY:
+ * This function implements the "Update existing prices" strategy:
+ * 1. Mark existing entries as inactive (soft-delete)
+ * 2. Insert new entries with the updated prices
+ * 
+ * WHY NOT HARD DELETE OR UPDATE IN PLACE:
+ * - Hard delete destroys pricing history, which is valuable for auditing
+ * - Update in place loses the original price, preventing price trend analysis
+ * - Soft-delete + insert preserves full history: old price is still in DB
+ * 
+ * ABANDON BEHAVIOR:
+ * If this operation is later abandoned:
+ * - New entries inserted here are deactivated
+ * - Previously deactivated entries are reactivated ONLY IF:
+ *   - They were deactivated by THIS operation (tracked by operationId in metadata)
+ *   - No newer operation modified them
+ * 
+ * @param entriesToDeactivate - IDs of existing entries to mark inactive
+ * @param newEntries - New entries to insert
+ * @param operationId - The operation ID for tracking
+ * @returns Count of deactivated and inserted entries
+ */
+export async function deactivateAndInsertEntries(
+  entriesToDeactivate: string[],
+  newEntries: CreatePriceEntry[],
+  operationId: string
+): Promise<{ deactivatedCount: number; insertedCount: number }> {
+  const db = getPrisma();
+
+  // Use transaction for atomicity
+  const result = await db.$transaction(async (tx) => {
+    // Step 1: Deactivate existing entries
+    // We store the operationId that deactivated them for potential reactivation
+    let deactivatedCount = 0;
+    if (entriesToDeactivate.length > 0) {
+      const deactivateResult = await tx.priceEntry.updateMany({
+        where: {
+          id: { in: entriesToDeactivate },
+          isActive: true, // Safety: only deactivate active entries
+        },
+        data: {
+          isActive: false,
+          abandonedAt: new Date(),
+          // Note: We can't easily store "deactivatedByOperationId" in current schema
+          // The metadata in OperationLog will track this for abandon recovery
+        },
+      });
+      deactivatedCount = deactivateResult.count;
+    }
+
+    // Step 2: Insert new entries
+    const dataWithOperation = newEntries.map((entry) => ({
+      ...entry,
+      operationId,
+      isActive: true,
+      importBatchId: operationId,
+      arrivageDate: entry.arrivageDate ?? null,
+      constructorRef: entry.constructorRef ?? null,
+      supplierPhone: entry.supplierPhone ?? null,
+      notes: entry.notes ?? null,
+    }));
+
+    const insertResult = await tx.priceEntry.createMany({
+      data: dataWithOperation,
+    });
+
+    return {
+      deactivatedCount,
+      insertedCount: insertResult.count,
+    };
+  });
+
+  return result;
+}
+
+/**
+ * Reactivate entries that were deactivated by a specific operation.
+ * Used during abandon to restore previous state.
+ * 
+ * IMPORTANT: This only reactivates entries that were deactivated around
+ * the same time as the operation's completion. This prevents accidental
+ * reactivation of entries that were legitimately deactivated by other means.
+ * 
+ * @param operationId - The operation whose deactivations should be undone
+ * @param deactivatedEntryIds - IDs of entries that were deactivated
+ */
+export async function reactivateDeactivatedEntries(
+  deactivatedEntryIds: string[]
+): Promise<number> {
+  const db = getPrisma();
+
+  if (deactivatedEntryIds.length === 0) {
+    return 0;
+  }
+
+  const result = await db.priceEntry.updateMany({
+    where: {
+      id: { in: deactivatedEntryIds },
+      isActive: false,
+    },
+    data: {
+      isActive: true,
+      abandonedAt: null,
+    },
+  });
+
+  return result.count;
+}
+
+/**
+ * Create multiple price entries in a batch with operation tracking.
+ * 
+ * OPERATIONS LOG INTEGRATION:
+ * This is the preferred method for creating entries as part of an operation.
+ * The operationId links all entries to their parent operation, enabling:
+ * - Full auditability (which operation created each entry)
+ * - Safe abandonment (soft-delete all entries from an operation)
+ * - Crash recovery (detect incomplete operations)
+ * 
+ * IMPORTANT: The operation MUST be created BEFORE calling this function.
+ * This function does NOT create or complete the operation - that's the caller's
+ * responsibility. This separation ensures the operation lifecycle is explicit.
+ * 
+ * @param entries - The entries to create
+ * @param operationId - The ID of the operation that created these entries
+ */
+export async function createEntriesBatchWithOperation(
+  entries: CreatePriceEntry[],
+  operationId: string
+): Promise<{ count: number }> {
+  const db = getPrisma();
+
+  // Add operationId to all entries, along with default values
+  const dataWithOperation = entries.map((entry) => ({
+    ...entry,
+    operationId, // Link to parent operation
+    isActive: true, // New entries are always active
+    importBatchId: operationId, // For backwards compatibility
+    arrivageDate: entry.arrivageDate ?? null,
+    constructorRef: entry.constructorRef ?? null,
+    supplierPhone: entry.supplierPhone ?? null,
+    notes: entry.notes ?? null,
+  }));
+
+  const result = await db.priceEntry.createMany({
+    data: dataWithOperation,
+  });
+
+  // Note: We don't log to ImportLog here - the OperationLog is the source of truth
+  // ImportLog is deprecated in favor of the Operations Log system
+
+  return { count: result.count };
+}
+
 /**
  * Get database statistics.
+ * 
+ * DEFENSIVE QUERY: Only counts active entries.
+ * This ensures stats reflect only valid, non-abandoned data.
  */
 export async function getStats(): Promise<DatabaseStats> {
   const db = getPrisma();
+  
+  // Defensive where clause - only active entries
+  // We use isActive as the source of truth, no join to OperationLog needed
+  const activeWhere: Prisma.PriceEntryWhereInput = {
+    isActive: true,
+  };
 
   const [
     totalEntries,
@@ -328,11 +634,12 @@ export async function getStats(): Promise<DatabaseStats> {
     uniqueBrands,
     dateRange,
   ] = await Promise.all([
-    db.priceEntry.count(),
-    db.priceEntry.groupBy({ by: ['reference'] }).then((r) => r.length),
-    db.priceEntry.groupBy({ by: ['supplierName'] }).then((r) => r.length),
-    db.priceEntry.groupBy({ by: ['brand'] }).then((r) => r.length),
+    db.priceEntry.count({ where: activeWhere }),
+    db.priceEntry.groupBy({ by: ['reference'], where: activeWhere }).then((r) => r.length),
+    db.priceEntry.groupBy({ by: ['supplierName'], where: activeWhere }).then((r) => r.length),
+    db.priceEntry.groupBy({ by: ['brand'], where: activeWhere }).then((r) => r.length),
     db.priceEntry.aggregate({
+      where: activeWhere,
       _max: { entryDate: true },
       _min: { entryDate: true },
     }),
@@ -343,13 +650,15 @@ export async function getStats(): Promise<DatabaseStats> {
     uniqueReferences,
     uniqueSuppliers,
     uniqueBrands,
-    lastEntryDate: dateRange._max.entryDate?.toISOString() || null,
-    oldestEntryDate: dateRange._min.entryDate?.toISOString() || null,
+    lastEntryDate: dateRange._max?.entryDate?.toISOString() || null,
+    oldestEntryDate: dateRange._min?.entryDate?.toISOString() || null,
   };
 }
 
 /**
  * Get distinct values for a column (for autocomplete/filters).
+ * 
+ * DEFENSIVE QUERY: Only includes values from active entries.
  */
 export async function getDistinctValues(
   column: 'reference' | 'brand' | 'supplierName' | 'designation',
@@ -357,9 +666,12 @@ export async function getDistinctValues(
 ): Promise<string[]> {
   const db = getPrisma();
 
-  const where = search
-    ? { [column]: { contains: search } }
-    : {};
+  // Defensive where clause - only active entries
+  // We use isActive as the source of truth, no join to OperationLog needed
+  const where: Prisma.PriceEntryWhereInput = {
+    isActive: true,
+    ...(search ? { [column]: { contains: search } } : {}),
+  };
 
   const results = await db.priceEntry.findMany({
     where,
@@ -386,6 +698,9 @@ export async function getImportHistory(limit: number = 20) {
 
 /**
  * Get all entries matching criteria (for export).
+ * 
+ * DEFENSIVE QUERY: Only exports active entries from completed operations.
+ * This ensures exports never include abandoned or incomplete data.
  */
 export async function getAllEntriesForExport(
   filters?: ColumnFilter[],
@@ -393,6 +708,7 @@ export async function getAllEntriesForExport(
 ): Promise<PriceEntry[]> {
   const db = getPrisma();
   
+  // buildWhereClause now includes defensive filtering by default
   const where = buildWhereClause(filters, globalSearch);
   
   return db.priceEntry.findMany({

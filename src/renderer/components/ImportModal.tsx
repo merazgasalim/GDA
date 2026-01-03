@@ -13,7 +13,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { useAppStore, selectCanImport } from '../store';
-import type { ImportPreview, ImportRow } from '../../shared/types';
+import type { ImportPreview } from '../../shared/types';
 
 export const ImportModal: React.FC = () => {
   const isOpen = useAppStore((state) => state.isImportModalOpen);

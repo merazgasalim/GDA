@@ -8,6 +8,122 @@
 import { z } from 'zod';
 
 // ===========================================
+// OPERATIONS LOG TYPES
+// ===========================================
+// These types support the Operations Log system for full auditability.
+// See prisma/schema.prisma for detailed documentation on the design rationale.
+
+/**
+ * Operation types represent HIGH-LEVEL user intents.
+ * Each type is a meaningful business action, not a raw SQL operation.
+ */
+export const OperationTypeSchema = z.enum([
+  'IMPORT',         // Bulk import from clipboard/file
+  'MANUAL_ADD',     // Single entry manual creation  
+  'BULK_EDIT',      // Bulk modification of existing entries
+  'BULK_DELETE',    // Soft-delete of multiple entries
+  'SYSTEM_MIGRATE', // System-initiated data migration
+]);
+export type OperationType = z.infer<typeof OperationTypeSchema>;
+
+/**
+ * Operation status lifecycle:
+ * PENDING -> COMPLETED (success) or FAILED (error)
+ * COMPLETED -> ABANDONED (user-initiated soft-rollback)
+ * 
+ * CRITICAL: Operations in PENDING status after app restart indicate
+ * a crash during the operation. These should prompt user resolution.
+ */
+export const OperationStatusSchema = z.enum([
+  'PENDING',    // Operation started but not finished (crash recovery state)
+  'COMPLETED',  // Operation finished successfully  
+  'FAILED',     // Operation failed during processing
+  'ABANDONED',  // Operation was completed but later abandoned by user
+]);
+export type OperationStatus = z.infer<typeof OperationStatusSchema>;
+
+/**
+ * Operation metadata varies by operation type.
+ * This is stored as JSON in the database for flexibility.
+ */
+export const OperationMetadataSchema = z.object({
+  // Import operations
+  source: z.string().optional(),           // e.g., "clipboard", "file"
+  originalFilename: z.string().optional(), // Original file name if from file
+  fileHash: z.string().optional(),         // Hash for deduplication
+  
+  // Edit operations  
+  affectedFields: z.array(z.string()).optional(), // Which fields were modified
+  reason: z.string().optional(),                   // User-provided reason
+  
+  // Delete operations
+  criteria: z.record(z.unknown()).optional(), // Filter criteria used
+  
+  // General
+  errorMessage: z.string().optional(), // If operation failed
+}).passthrough(); // Allow additional properties
+export type OperationMetadata = z.infer<typeof OperationMetadataSchema>;
+
+/**
+ * Full operation log entry as returned from the database.
+ */
+export const OperationLogSchema = z.object({
+  id: z.string().uuid(),
+  type: OperationTypeSchema,
+  status: OperationStatusSchema,
+  rowCount: z.number().int().nonnegative(),
+  createdAt: z.date(),
+  completedAt: z.date().nullable(),
+  abandonedAt: z.date().nullable(),
+  createdBy: z.string(),
+  abandonedBy: z.string().nullable(),
+  metadata: z.string().nullable(), // JSON string
+  description: z.string().nullable(),
+  abandonedOperationId: z.string().nullable(),
+});
+export type OperationLog = z.infer<typeof OperationLogSchema>;
+
+/**
+ * Parsed operation with metadata as object (for UI display).
+ */
+export interface OperationLogDisplay extends Omit<OperationLog, 'metadata'> {
+  metadata: OperationMetadata | null;
+}
+
+/**
+ * Input for creating a new operation.
+ */
+export const CreateOperationSchema = z.object({
+  type: OperationTypeSchema,
+  description: z.string().optional(),
+  metadata: OperationMetadataSchema.optional(),
+  createdBy: z.string().default('local'),
+});
+export type CreateOperation = z.infer<typeof CreateOperationSchema>;
+
+/**
+ * Result of abandoning an operation.
+ */
+export interface AbandonOperationResult {
+  success: boolean;
+  operationId: string;
+  affectedRowCount: number;
+  abandonEventId?: string; // ID of the ABANDON_EVENT operation created
+  error?: string;
+}
+
+/**
+ * Incomplete operations found on app startup (crash recovery).
+ */
+export interface IncompleteOperation {
+  id: string;
+  type: OperationType;
+  rowCount: number;
+  createdAt: Date;
+  description: string | null;
+}
+
+// ===========================================
 // PRICE ENTRY TYPES
 // ===========================================
 
@@ -26,6 +142,10 @@ export const PriceEntrySchema = z.object({
   notes: z.string().nullable(),
   importBatchId: z.string().nullable(),
   createdAt: z.date(),
+  // Operations log fields
+  operationId: z.string().nullable(),
+  isActive: z.boolean().default(true),
+  abandonedAt: z.date().nullable(),
 });
 
 export type PriceEntry = z.infer<typeof PriceEntrySchema>;
@@ -115,6 +235,220 @@ export interface ImportResult {
   batchId: string;
   importedCount: number;
   errors: ImportError[];
+}
+
+// ===========================================
+// CSV IMPORT TYPES (Two-Step Wizard)
+// ===========================================
+
+/**
+ * Target fields available for CSV column mapping.
+ * --none-- means the column will be ignored.
+ */
+export const CSVTargetFieldSchema = z.enum([
+  '--none--',
+  'reference',
+  'designation',
+  'brand',
+  'price',
+]);
+export type CSVTargetField = z.infer<typeof CSVTargetFieldSchema>;
+
+/**
+ * Human-readable labels for CSV target fields (French).
+ */
+export const CSV_TARGET_FIELD_LABELS: Record<CSVTargetField, string> = {
+  '--none--': '-- Ignorer --',
+  reference: 'Référence',
+  designation: 'Désignation',
+  brand: 'Marque',
+  price: 'Prix',
+};
+
+/**
+ * Column mapping configuration for CSV import.
+ * Maps CSV column index to target field.
+ */
+export interface CSVColumnMapping {
+  [columnIndex: number]: CSVTargetField;
+}
+
+/**
+ * Parsed CSV data from Step 1.
+ */
+export interface CSVParsedData {
+  /** Raw headers from CSV (if first row is header) */
+  headers: string[];
+  /** All parsed rows as string arrays */
+  rows: string[][];
+  /** Detected delimiter used */
+  delimiter: string;
+  /** Whether first row was treated as header */
+  hasHeader: boolean;
+  /** Total number of rows (excluding header if hasHeader) */
+  totalRows: number;
+  /** Number of columns detected */
+  columnCount: number;
+  /** Hash of the content for deduplication */
+  contentHash: string;
+  /** Original filename if from file */
+  filename?: string;
+}
+
+/**
+ * Validation error for a single cell in CSV import.
+ */
+export interface CSVValidationError {
+  rowIndex: number;
+  columnIndex: number;
+  field: CSVTargetField;
+  value: string;
+  message: string;
+}
+
+/**
+ * Preview data for Step 2 of CSV import.
+ */
+export interface CSVImportPreview {
+  /** Parsed CSV data from Step 1 */
+  parsedData: CSVParsedData;
+  /** Current column mapping */
+  mapping: CSVColumnMapping;
+  /** Validation errors based on current mapping */
+  validationErrors: CSVValidationError[];
+  /** Number of rows that will be imported (valid rows only) */
+  validRowCount: number;
+  /** Number of rows with errors */
+  invalidRowCount: number;
+}
+
+/**
+ * Supplier info for CSV import context.
+ */
+export interface CSVSupplierInfo {
+  name: string;
+  phone?: string;
+  isNew: boolean;
+}
+
+/**
+ * Complete import configuration from the wizard.
+ */
+export interface CSVImportConfig {
+  /** Parsed CSV data */
+  parsedData: CSVParsedData;
+  /** Column mapping */
+  mapping: CSVColumnMapping;
+  /** Selected supplier */
+  supplier: CSVSupplierInfo;
+  /** Import/arrival date */
+  importDate: string;
+  /** Strategy for handling duplicates (required if duplicates exist) */
+  duplicateStrategy?: DuplicateStrategy;
+}
+
+// ===========================================
+// DUPLICATE DETECTION TYPES
+// ===========================================
+
+/**
+ * Strategy for handling duplicate references during import.
+ * 
+ * CRITICAL: No default selection. User MUST explicitly choose.
+ * This prevents accidental data overwrites.
+ */
+export type DuplicateStrategy = 
+  | 'skip'    // Do not import duplicate rows, keep existing prices
+  | 'update'  // Deactivate old prices, insert new prices (preserves history)
+  | 'abort';  // Cancel the entire import
+
+/**
+ * Category of a parsed row after analysis.
+ */
+export type RowCategory = 
+  | 'NEW'                  // No existing record with same reference+supplier
+  | 'DUPLICATE_REFERENCE'  // Matches existing active record
+  | 'INVALID';             // Missing required fields
+
+/**
+ * Information about a detected duplicate.
+ */
+export interface DuplicateInfo {
+  /** Index in the parsed CSV rows array */
+  rowIndex: number;
+  /** Reference value from CSV */
+  reference: string;
+  /** ID of the existing database record */
+  existingEntryId: string;
+  /** Current price in database */
+  existingPrice: number;
+  /** Price from CSV (may be null if price column not mapped) */
+  newPrice: number | null;
+  /** Date of existing entry */
+  existingDate: Date;
+}
+
+/**
+ * A row that was found to be a duplicate within the CSV itself.
+ * (Same reference appears multiple times in the import)
+ */
+export interface IntraCsvDuplicate {
+  /** Reference that appears multiple times */
+  reference: string;
+  /** Indices of all rows with this reference */
+  rowIndices: number[];
+}
+
+/**
+ * Result of the pre-import duplicate analysis.
+ * 
+ * This analysis happens BEFORE any database writes.
+ * No OperationLog is created during analysis.
+ */
+export interface DuplicateAnalysisResult {
+  /** Rows that have no matching record in database */
+  newRows: number[];
+  /** Rows that match existing active records */
+  duplicateRows: DuplicateInfo[];
+  /** Rows that are invalid (missing required fields) */
+  invalidRows: number[];
+  /** References that appear multiple times within the CSV */
+  intraCsvDuplicates: IntraCsvDuplicate[];
+  /** Total counts for UI display */
+  summary: {
+    totalRows: number;
+    newCount: number;
+    duplicateCount: number;
+    invalidCount: number;
+    intraCsvDuplicateCount: number;
+  };
+  /** Whether user must select a strategy before proceeding */
+  requiresStrategySelection: boolean;
+}
+
+/**
+ * Result of CSV file reading.
+ */
+export interface CSVFileReadResult {
+  success: boolean;
+  content?: string;
+  filename?: string;
+  error?: string;
+}
+
+/**
+ * Result of CSV import execution.
+ */
+export interface CSVImportResult {
+  success: boolean;
+  operationId: string;
+  importedCount: number;
+  errors: CSVValidationError[];
+  skippedCount: number;
+  /** Number of existing records that were updated (deactivated + new inserted) */
+  updatedCount: number;
+  /** Strategy that was used */
+  strategyUsed?: DuplicateStrategy;
 }
 
 // ===========================================

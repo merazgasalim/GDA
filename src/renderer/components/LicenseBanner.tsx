@@ -6,11 +6,10 @@
  */
 
 import React from 'react';
-import { useAppStore, selectIsReadOnly } from '../store';
+import { useAppStore } from '../store';
 
 export const LicenseBanner: React.FC = () => {
   const licenseStatus = useAppStore((state) => state.licenseStatus);
-  const isReadOnly = useAppStore(selectIsReadOnly);
   const openLicenseModal = useAppStore((state) => state.openLicenseModal);
 
   if (licenseStatus.isValid && !licenseStatus.isExpired) {

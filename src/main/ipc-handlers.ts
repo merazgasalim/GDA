@@ -29,6 +29,13 @@ import {
   parseClipboardText,
   executeImport,
   getImportHistoryService,
+  readCSVFile,
+  parseCSV,
+  validateCSVImport,
+  getSuggestedMapping,
+  getDefaultMapping,
+  getExistingSuppliers,
+  executeCSVImport,
 } from './services/import-service';
 import {
   exportToCsv,
@@ -42,6 +49,15 @@ import {
   getMachineIdForDisplay,
   validateLicense,
 } from './services/license-service';
+import {
+  getOperations,
+  getOperationById,
+  abandonOperation,
+  findIncompleteOperations,
+  finalizePendingOperation,
+  abandonPendingOperation,
+  getOperationStats,
+} from './services/operation-service';
 
 // ===========================================
 // ERROR HANDLING UTILITY
@@ -171,6 +187,162 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
   ipcMain.handle(IPC_CHANNELS.IMPORT_GET_HISTORY, async (_event, limit?: number) => {
     try {
       return await getImportHistoryService(limit);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  // ===========================================
+  // CSV IMPORT HANDLERS (Two-Step Wizard)
+  // ===========================================
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_CSV_READ_FILE, async (_event, filePath: string) => {
+    try {
+      if (!filePath || typeof filePath !== 'string') {
+        throw new Error('Invalid file path');
+      }
+      return await readCSVFile(filePath);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_CSV_PARSE, async (_event, content: string, options?: any) => {
+    try {
+      if (typeof content !== 'string') {
+        throw new Error('Invalid content');
+      }
+      const parsedData = parseCSV(content, options);
+      
+      // Also return suggested mapping if headers are available
+      const suggestedMapping = parsedData.hasHeader 
+        ? getSuggestedMapping(parsedData.headers)
+        : getDefaultMapping(parsedData.columnCount);
+      
+      return {
+        parsedData,
+        suggestedMapping,
+      };
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_CSV_VALIDATE, async (_event, parsedData: any, mapping: any) => {
+    try {
+      if (!parsedData || !mapping) {
+        throw new Error('Invalid validation parameters');
+      }
+      return validateCSVImport(parsedData, mapping);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_CSV_EXECUTE, async (_event, config: any) => {
+    try {
+      if (!config || !config.parsedData || !config.mapping || !config.supplier) {
+        throw new Error('Invalid import configuration');
+      }
+      return await executeCSVImport(config);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_CSV_GET_SUPPLIERS, async () => {
+    try {
+      return await getExistingSuppliers();
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_CSV_ANALYZE_DUPLICATES, async (_event, parsedData: any, mapping: any, supplierName: string) => {
+    try {
+      if (!parsedData || !mapping || !supplierName) {
+        throw new Error('Invalid parameters for duplicate analysis');
+      }
+      const { analyzeForDuplicates } = await import('./services/import-service');
+      return await analyzeForDuplicates(parsedData, mapping, supplierName);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+  // ===========================================
+  // OPERATIONS LOG HANDLERS
+  // ===========================================
+  // These handlers support the Operations Log system for full auditability.
+  // SECURITY: Abandon operations require a valid license.
+
+  ipcMain.handle(IPC_CHANNELS.OPERATIONS_GET_LIST, async (_event, page?: number, pageSize?: number) => {
+    try {
+      return await getOperations(page ?? 1, pageSize ?? 20);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPERATIONS_GET_BY_ID, async (_event, operationId: string) => {
+    try {
+      if (!operationId || typeof operationId !== 'string') {
+        throw new Error('Invalid operation ID');
+      }
+      return await getOperationById(operationId);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPERATIONS_ABANDON, async (_event, operationId: string, reason?: string) => {
+    try {
+      if (!operationId || typeof operationId !== 'string') {
+        throw new Error('Invalid operation ID');
+      }
+      // License check is done inside abandonOperation
+      return await abandonOperation({
+        operationId,
+        reason,
+        abandonedBy: 'local',
+      });
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPERATIONS_GET_INCOMPLETE, async () => {
+    try {
+      return await findIncompleteOperations();
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPERATIONS_FINALIZE_PENDING, async (_event, operationId: string) => {
+    try {
+      if (!operationId || typeof operationId !== 'string') {
+        throw new Error('Invalid operation ID');
+      }
+      return await finalizePendingOperation(operationId);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPERATIONS_ABANDON_PENDING, async (_event, operationId: string, reason?: string) => {
+    try {
+      if (!operationId || typeof operationId !== 'string') {
+        throw new Error('Invalid operation ID');
+      }
+      return await abandonPendingOperation(operationId, reason);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPERATIONS_GET_STATS, async () => {
+    try {
+      return await getOperationStats();
     } catch (error) {
       throw new Error(sanitizeError(error));
     }

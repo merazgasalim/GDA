@@ -17,6 +17,16 @@ import type {
   LicenseStatus,
   ColumnConfig,
   AppState,
+  OperationLogDisplay,
+  AbandonOperationResult,
+  IncompleteOperation,
+  CSVParsedData,
+  CSVColumnMapping,
+  CSVImportConfig,
+  CSVImportResult,
+  CSVImportPreview,
+  CSVFileReadResult,
+  DuplicateAnalysisResult,
 } from './types';
 
 // ===========================================
@@ -42,6 +52,77 @@ export interface DatabaseStats {
 }
 
 // ===========================================
+// OPERATIONS LOG API
+// ===========================================
+/**
+ * Operations Log API for full auditability and safe abandonment.
+ * 
+ * SECURITY: abandonOperation requires a valid license.
+ * See src/main/services/operation-service.ts for implementation details.
+ */
+export interface OperationsApi {
+  /**
+   * Get paginated list of operations for the Operations Log screen.
+   * @param page - Page number (1-based)
+   * @param pageSize - Number of operations per page
+   */
+  getList: (page?: number, pageSize?: number) => Promise<OperationListResult>;
+  
+  /**
+   * Get a single operation by ID.
+   */
+  getById: (operationId: string) => Promise<OperationLogDisplay | null>;
+  
+  /**
+   * Abandon an operation (LICENSE REQUIRED).
+   * This marks the operation as ABANDONED and soft-deletes all related records.
+   * NO DATA IS DELETED - records are marked as is_active=false.
+   * 
+   * @param operationId - The operation to abandon
+   * @param reason - Optional reason for the abandonment (for audit trail)
+   */
+  abandon: (operationId: string, reason?: string) => Promise<AbandonOperationResult>;
+  
+  /**
+   * Get incomplete operations that need user resolution (crash recovery).
+   */
+  getIncomplete: () => Promise<IncompleteOperation[]>;
+  
+  /**
+   * Finalize a pending operation (mark as COMPLETED).
+   * Used when user confirms crashed operation's data is valid.
+   */
+  finalizePending: (operationId: string) => Promise<boolean>;
+  
+  /**
+   * Abandon a pending operation.
+   * Used when user wants to discard crashed operation's data.
+   */
+  abandonPending: (operationId: string, reason?: string) => Promise<AbandonOperationResult>;
+  
+  /**
+   * Get operation statistics.
+   */
+  getStats: () => Promise<OperationStats>;
+}
+
+export interface OperationListResult {
+  data: OperationLogDisplay[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export interface OperationStats {
+  totalOperations: number;
+  completedOperations: number;
+  abandonedOperations: number;
+  pendingOperations: number;
+  failedOperations: number;
+}
+
+// ===========================================
 // IMPORT API
 // ===========================================
 
@@ -49,6 +130,25 @@ export interface ImportApi {
   parseClipboard: (rawText: string, options?: ImportParseOptions) => Promise<ImportPreview>;
   execute: (rows: CreatePriceEntry[]) => Promise<ImportResult>;
   getHistory: (limit?: number) => Promise<ImportLogEntry[]>;
+  
+  // CSV Import (Two-Step Wizard)
+  csvReadFile: (filePath: string) => Promise<CSVFileReadResult>;
+  csvParse: (content: string, options?: CSVParseOptions) => Promise<CSVParseResult>;
+  csvValidate: (parsedData: CSVParsedData, mapping: CSVColumnMapping) => Promise<CSVImportPreview>;
+  csvAnalyzeDuplicates: (parsedData: CSVParsedData, mapping: CSVColumnMapping, supplierName: string) => Promise<DuplicateAnalysisResult>;
+  csvExecute: (config: CSVImportConfig) => Promise<CSVImportResult>;
+  csvGetSuppliers: () => Promise<string[]>;
+}
+
+export interface CSVParseOptions {
+  delimiter?: string;
+  hasHeader?: boolean;
+  filename?: string;
+}
+
+export interface CSVParseResult {
+  parsedData: CSVParsedData;
+  suggestedMapping: CSVColumnMapping;
 }
 
 export interface ImportParseOptions {
@@ -159,6 +259,7 @@ export interface ElectronApi {
   app: AppApi;
   settings: SettingsApi;
   dialog: DialogApi;
+  operations: OperationsApi;
 }
 
 // Declare global window type extension

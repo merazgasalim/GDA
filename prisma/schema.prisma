@@ -1,24 +1,3 @@
-// Prisma Schema for Gestion des Arrivages
-// ===========================================
-// This schema follows INTENTIONAL DENORMALIZATION principles.
-// See: https://www.vertabelo.com/blog/when-to-denormalize-a-database/
-//
-// DESIGN DECISIONS:
-// 1. PriceEntry is the SINGLE main table - denormalized by design
-// 2. Each entry is IMMUTABLE - we NEVER update historical data
-// 3. Supplier info (name, phone) is stored directly in PriceEntry
-//    - Pros: Fast imports, no FK lookups, simpler queries
-//    - Cons: Data duplication (acceptable for this use case)
-// 4. This is a PRICE MEMORY system, not stock management
-//    - We want to answer: "What price did I pay for X from Y on date Z?"
-//    - Not: "How many X do I have in stock?"
-//
-// The denormalization trade-offs are acceptable because:
-// - Import speed is critical (bulk paste operations)
-// - Data is append-only (no complex update cascades needed)
-// - Query patterns are simple (search/filter, not complex joins)
-// - Storage is cheap, developer time is expensive
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -31,38 +10,42 @@ datasource db {
 /// Main price entry table - DENORMALIZED BY DESIGN
 /// Each row represents a single price observation at a point in time.
 /// Entries are IMMUTABLE - never update, only insert new records.
+///
+/// OPERATIONS LOG INTEGRATION:
+/// - operation_id links this entry to its parent operation
+/// - is_active allows soft-delete without destroying data
+/// - abandonedAt records when the entry was marked inactive
+///
+/// Query patterns MUST filter by is_active=true AND operation.status=COMPLETED
+/// to show only valid, non-abandoned data to users.
 model PriceEntry {
-  id                  String   @id @default(uuid())
-  
-  // Product identification
-  reference           String   // Part reference number
-  designation         String   // Part description/name
-  brand               String   // Brand/Marque (e.g., BOSCH, VALEO)
-  constructorRef      String?  // OEM/Constructor reference number
-  
-  // Supplier info - DENORMALIZED (not a separate table)
-  // Rationale: Allows flexible import without requiring supplier pre-registration
-  // Trade-off: Some duplication, but enables:
-  //   - One-step paste import (no FK validation)
-  //   - Supplier info captured exactly as received
-  //   - Historical supplier name changes preserved
-  supplierName        String   // Supplier/vendor name
-  supplierPhone       String?  // Supplier contact phone
-  
-  // Price data
-  price               Float    // Unit price at time of entry
-  currency            String   @default("MAD") // Currency code
-  
-  // Temporal data
-  entryDate           DateTime @default(now()) // When this price was recorded
-  arrivageDate        DateTime? // Date of the arrivage/shipment
-  
-  // Metadata
-  notes               String?  // Optional notes/comments
-  importBatchId       String?  // Groups entries from same import
-  createdAt           DateTime @default(now())
-  
-  // Indexes for common query patterns
+  id             String        @id @default(uuid())
+  reference      String
+  designation    String
+  brand          String
+  constructorRef String?
+  supplierName   String
+  supplierPhone  String?
+  price          Float
+  currency       String        @default("MAD")
+  entryDate      DateTime      @default(now())
+  arrivageDate   DateTime?
+  notes          String?
+  importBatchId  String?
+  createdAt      DateTime      @default(now())
+  /// Links this entry to the operation that created it.
+  /// CRITICAL: Every new entry MUST have an operationId.
+  /// Legacy entries (before this system) may have null operationId.
+  operationId    String?
+  /// Whether this entry is currently active (visible in normal queries).
+  /// false = entry was part of an abandoned operation
+  /// Default true for backwards compatibility with existing data.
+  isActive       Boolean       @default(true)
+  /// When this entry was marked as inactive (abandoned).
+  /// null = entry is active and has never been abandoned
+  abandonedAt    DateTime?
+  operation      OperationLog? @relation(fields: [operationId], references: [id])
+
   @@index([reference])
   @@index([designation])
   @@index([brand])
@@ -70,8 +53,9 @@ model PriceEntry {
   @@index([entryDate])
   @@index([arrivageDate])
   @@index([importBatchId])
-  
-  // Composite indexes for filtered searches
+  @@index([operationId])
+  @@index([isActive])
+  @@index([isActive, operationId])
   @@index([reference, brand])
   @@index([supplierName, entryDate])
 }
@@ -79,17 +63,54 @@ model PriceEntry {
 /// Application settings and configuration
 model AppSettings {
   id        String   @id @default("main")
-  settings  String   // JSON blob for flexible settings
+  settings  String
   updatedAt DateTime @updatedAt
 }
 
 /// Import history for audit trail
+/// NOTE: This model is DEPRECATED and will be removed in a future version.
+/// All new imports should use the OperationLog system instead.
+/// Kept for backwards compatibility with existing import history data.
 model ImportLog {
   id           String   @id @default(uuid())
   batchId      String   @unique
   rowCount     Int
   importedAt   DateTime @default(now())
-  rawPreview   String?  // First few rows for reference
-  status       String   @default("completed") // completed | partial | failed
+  rawPreview   String?
+  status       String   @default("completed")
   errorMessage String?
+}
+
+/// Central audit log for all data-modifying operations.
+///
+/// CRITICAL INVARIANTS:
+/// 1. Every data modification MUST have an associated OperationLog entry
+/// 2. Operation is created BEFORE any data is inserted
+/// 3. Status is PENDING until all writes succeed
+/// 4. An operation in PENDING status after app restart indicates a crash
+/// and should prompt user for resolution (finalize or abandon)
+///
+/// This table is APPEND-ONLY for new operations. Only the status field
+/// may be updated (PENDING->COMPLETED, COMPLETED->ABANDONED).
+model OperationLog {
+  id                   String       @id @default(uuid())
+  /// Operation type: IMPORT | MANUAL_ADD | BULK_EDIT | BULK_DELETE | SYSTEM_MIGRATE
+  type                 String
+  /// Status: PENDING | COMPLETED | FAILED | ABANDONED
+  status               String       @default("PENDING")
+  rowCount             Int          @default(0)
+  createdAt            DateTime     @default(now())
+  completedAt          DateTime?
+  abandonedAt          DateTime?
+  createdBy            String       @default("local")
+  abandonedBy          String?
+  metadata             String?
+  description          String?
+  abandonedOperationId String?
+  priceEntries         PriceEntry[]
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+  @@index([abandonedOperationId])
 }

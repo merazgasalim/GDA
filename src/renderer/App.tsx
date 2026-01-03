@@ -2,20 +2,27 @@
  * Main Application Component
  * ==========================
  * Root component that assembles the full UI.
+ * 
+ * OPERATIONS LOG INTEGRATION:
+ * On startup, we check for incomplete operations (PENDING status).
+ * These indicate a potential crash during a previous session.
+ * The user must resolve these before proceeding normally.
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { useAppStore } from './store';
 import {
   LicenseBanner,
   LicenseModal,
-  ImportModal,
+  CSVImportWizard,
   ExportModal,
   DataGrid,
   Header,
   Footer,
   ColumnSettings,
+  OperationsLogModal,
+  IncompleteOperationsDialog,
 } from './components';
 
 export const App: React.FC = () => {
@@ -23,12 +30,30 @@ export const App: React.FC = () => {
   const fetchEntries = useAppStore((state) => state.fetchEntries);
   const fetchStats = useAppStore((state) => state.fetchStats);
   const isLicenseLoading = useAppStore((state) => state.isLicenseLoading);
+  
+  // Incomplete operations state for crash recovery
+  const [showIncompleteOperations, setShowIncompleteOperations] = useState(false);
+  const [incompleteOperationsChecked, setIncompleteOperationsChecked] = useState(false);
 
   // Initialize app on mount
   useEffect(() => {
     const initialize = async () => {
       await fetchLicenseStatus();
-      await Promise.all([fetchEntries(), fetchStats()]);
+      
+      // Check for incomplete operations before loading data
+      // This is critical for data integrity after a crash
+      try {
+        const incompleteOps = await window.electronApi.operations.getIncomplete();
+        if (incompleteOps.length > 0) {
+          console.log(`[App] Found ${incompleteOps.length} incomplete operations, prompting user`);
+          setShowIncompleteOperations(true);
+        } else {
+          setIncompleteOperationsChecked(true);
+        }
+      } catch (error) {
+        console.error('[App] Failed to check incomplete operations:', error);
+        setIncompleteOperationsChecked(true);
+      }
     };
     
     initialize();
@@ -41,7 +66,20 @@ export const App: React.FC = () => {
     return () => {
       clearInterval(licenseCheckInterval);
     };
-  }, [fetchLicenseStatus, fetchEntries, fetchStats]);
+  }, [fetchLicenseStatus]);
+  
+  // Fetch data after incomplete operations are resolved
+  useEffect(() => {
+    if (incompleteOperationsChecked && !isLicenseLoading) {
+      Promise.all([fetchEntries(), fetchStats()]);
+    }
+  }, [incompleteOperationsChecked, isLicenseLoading, fetchEntries, fetchStats]);
+  
+  // Handle incomplete operations resolution
+  const handleIncompleteOperationsResolved = () => {
+    setShowIncompleteOperations(false);
+    setIncompleteOperationsChecked(true);
+  };
 
   // Show loading screen while initializing
   if (isLicenseLoading) {
@@ -81,8 +119,15 @@ export const App: React.FC = () => {
 
       {/* Modals */}
       <LicenseModal />
-      <ImportModal />
+      <CSVImportWizard />
       <ExportModal />
+      <OperationsLogModal />
+      
+      {/* Incomplete Operations Dialog (Crash Recovery) */}
+      <IncompleteOperationsDialog
+        isOpen={showIncompleteOperations}
+        onComplete={handleIncompleteOperationsResolved}
+      />
 
       {/* Toast Notifications */}
       <Toaster
