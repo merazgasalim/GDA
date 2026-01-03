@@ -28,6 +28,8 @@ import {
 } from '../../shared/types';
 import { DatabaseStats } from '../../shared/ipc-api';
 import { deriveEncryptionKey } from './license-service';
+import { setOperationServicePrisma } from './operation-service';
+import { setSupplierServicePrisma } from './supplier-service';
 
 // ===========================================
 // DATABASE CONFIGURATION
@@ -94,11 +96,9 @@ export async function initializeDatabase(): Promise<{
     await prisma.$connect();
     
     // Initialize operation service with the Prisma client
-    const { setOperationServicePrisma } = await import('./operation-service');
     setOperationServicePrisma(prisma);
     
     // Initialize supplier service with the Prisma client
-    const { setSupplierServicePrisma } = await import('./supplier-service');
     setSupplierServicePrisma(prisma);
 
     // For SQLCipher, we would set the key here:

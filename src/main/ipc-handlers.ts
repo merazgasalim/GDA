@@ -16,6 +16,7 @@ import {
   QueryParamsSchema,
   CreatePriceEntrySchema,
   ExportOptionsSchema,
+  CreateSupplierSchema,
 } from '../shared/types';
 import {
   queryEntries,
@@ -36,6 +37,7 @@ import {
   getDefaultMapping,
   getExistingSuppliers,
   executeCSVImport,
+  analyzeForDuplicates,
 } from './services/import-service';
 import {
   exportToCsv,
@@ -58,6 +60,15 @@ import {
   abandonPendingOperation,
   getOperationStats,
 } from './services/operation-service';
+import {
+  createSupplier,
+  listSuppliers,
+  getSupplierById,
+  deleteSupplier,
+  validateSupplierInput,
+  searchSuppliers,
+  getSupplierPhonesByName,
+} from './services/supplier-service';
 
 // ===========================================
 // ERROR HANDLING UTILITY
@@ -263,7 +274,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
       if (!parsedData || !mapping || !supplierName) {
         throw new Error('Invalid parameters for duplicate analysis');
       }
-      const { analyzeForDuplicates } = await import('./services/import-service');
       return await analyzeForDuplicates(parsedData, mapping, supplierName);
     } catch (error) {
       throw new Error(sanitizeError(error));
@@ -356,10 +366,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
 
   ipcMain.handle(IPC_CHANNELS.SUPPLIER_CREATE, async (_event, input) => {
     try {
-      // Import supplier service dynamically to avoid circular dependencies
-      const { createSupplier } = await import('./services/supplier-service');
-      const { CreateSupplierSchema } = await import('../shared/types');
-      
       // Validate input shape with Zod
       const validatedInput = CreateSupplierSchema.parse(input);
       
@@ -382,7 +388,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
 
   ipcMain.handle(IPC_CHANNELS.SUPPLIER_GET_LIST, async (_event, params) => {
     try {
-      const { listSuppliers } = await import('./services/supplier-service');
       return await listSuppliers(params || {});
     } catch (error) {
       throw new Error(sanitizeError(error));
@@ -394,7 +399,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
       if (!id || typeof id !== 'string') {
         throw new Error('Invalid supplier ID');
       }
-      const { getSupplierById } = await import('./services/supplier-service');
       return await getSupplierById(id);
     } catch (error) {
       throw new Error(sanitizeError(error));
@@ -406,7 +410,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
       if (!id || typeof id !== 'string') {
         throw new Error('Invalid supplier ID');
       }
-      const { deleteSupplier } = await import('./services/supplier-service');
       return await deleteSupplier(id);
     } catch (error) {
       throw new Error(sanitizeError(error));
@@ -415,7 +418,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
 
   ipcMain.handle(IPC_CHANNELS.SUPPLIER_VALIDATE, async (_event, input) => {
     try {
-      const { validateSupplierInput } = await import('./services/supplier-service');
       const errors = validateSupplierInput(input);
       return { isValid: errors.length === 0, errors };
     } catch (error) {
@@ -425,7 +427,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
 
   ipcMain.handle(IPC_CHANNELS.SUPPLIER_SEARCH, async (_event, query: string, limit?: number) => {
     try {
-      const { searchSuppliers } = await import('./services/supplier-service');
       return await searchSuppliers(query || '', limit || 10);
     } catch (error) {
       throw new Error(sanitizeError(error));
@@ -437,7 +438,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
       if (!supplierName || typeof supplierName !== 'string') {
         return [];
       }
-      const { getSupplierPhonesByName } = await import('./services/supplier-service');
       return await getSupplierPhonesByName(supplierName);
     } catch (error) {
       console.error('Error getting supplier phones:', error);

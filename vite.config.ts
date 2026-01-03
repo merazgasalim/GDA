@@ -8,9 +8,6 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Prevent multiple electron startups
-let electronStarted = false;
-
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
@@ -19,12 +16,6 @@ export default defineConfig({
       {
         // Main process entry
         entry: 'src/main/index.ts',
-        onstart(options: { startup: () => void }) {
-          if (!electronStarted) {
-            electronStarted = true;
-            options.startup();
-          }
-        },
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -39,8 +30,9 @@ export default defineConfig({
       {
         // Preload script
         entry: 'src/main/preload.ts',
-        onstart(options: { reload: () => void }) {
-          options.reload();
+        onstart({ reload }) {
+          // Notify the renderer process to reload the page when the preload script is rebuilt
+          reload();
         },
         vite: {
           build: {

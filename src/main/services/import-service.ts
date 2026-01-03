@@ -49,6 +49,12 @@ import {
 } from './database-service';
 import { isFeatureAllowed } from './license-service';
 import {
+  createOperation,
+  completeOperation,
+  failOperation,
+} from './operation-service';
+import { listSuppliers } from './supplier-service';
+import {
   parseCSVContent,
   validateCSVMapping,
   parsePrice as parsePriceFromCSV,
@@ -388,9 +394,6 @@ export async function executeImport(
     };
   }
 
-  // Import operation service functions
-  const { createOperation, completeOperation, failOperation } = await import('./operation-service');
-  
   let operationId: string | null = null;
   
   try {
@@ -721,7 +724,6 @@ export function getDefaultMapping(columnCount: number): CSVColumnMapping {
 export async function getExistingSuppliers(): Promise<string[]> {
   try {
     // Get suppliers from new Supplier table via supplier service
-    const { listSuppliers } = await import('./supplier-service');
     const supplierResult = await listSuppliers({ pageSize: 1000 });
     const supplierNames = supplierResult.data.map((s: { name: string }) => s.name);
     
@@ -1005,9 +1007,6 @@ export async function executeCSVImport(
     };
   }
 
-  // Import operation service functions
-  const { createOperation, completeOperation, failOperation } = await import('./operation-service');
-  
   let operationId: string | null = null;
 
   try {
