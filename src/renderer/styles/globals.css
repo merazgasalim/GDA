@@ -1,0 +1,277 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================
+   GESTION DES ARRIVAGES - Global Styles
+   =========================================== */
+
+/* Root variables */
+:root {
+  --header-height: 56px;
+  --sidebar-width: 0px;
+  --footer-height: 32px;
+}
+
+/* Base styles */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: #f3f4f6;
+  color: #1f2937;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a1a1a1;
+}
+
+/* Focus styles for accessibility */
+*:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Table styles */
+.data-grid {
+  @apply w-full border-collapse;
+}
+
+.data-grid th {
+  @apply bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider;
+  @apply border-b border-gray-200 px-4 py-3;
+  @apply sticky top-0 z-10;
+}
+
+.data-grid td {
+  @apply px-4 py-3 text-sm text-gray-900;
+  @apply border-b border-gray-100;
+}
+
+.data-grid tr:hover td {
+  @apply bg-blue-50;
+}
+
+.data-grid tr.selected td {
+  @apply bg-blue-100;
+}
+
+/* Filter input under column headers */
+.column-filter-input {
+  @apply w-full px-2 py-1 text-xs border border-gray-300 rounded;
+  @apply focus:border-blue-500 focus:ring-1 focus:ring-blue-500;
+  @apply placeholder-gray-400;
+}
+
+/* Button styles */
+.btn {
+  @apply inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md;
+  @apply transition-colors duration-150;
+  @apply focus:outline-none focus:ring-2 focus:ring-offset-2;
+  @apply disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.btn-primary {
+  @apply bg-blue-600 text-white;
+  @apply hover:bg-blue-700;
+  @apply focus:ring-blue-500;
+}
+
+.btn-secondary {
+  @apply bg-white text-gray-700 border border-gray-300;
+  @apply hover:bg-gray-50;
+  @apply focus:ring-blue-500;
+}
+
+.btn-danger {
+  @apply bg-red-600 text-white;
+  @apply hover:bg-red-700;
+  @apply focus:ring-red-500;
+}
+
+.btn-success {
+  @apply bg-green-600 text-white;
+  @apply hover:bg-green-700;
+  @apply focus:ring-green-500;
+}
+
+.btn-sm {
+  @apply px-3 py-1.5 text-xs;
+}
+
+.btn-lg {
+  @apply px-6 py-3 text-base;
+}
+
+/* Input styles */
+.input {
+  @apply w-full px-3 py-2 text-sm border border-gray-300 rounded-md;
+  @apply focus:border-blue-500 focus:ring-1 focus:ring-blue-500;
+  @apply placeholder-gray-400;
+  @apply disabled:bg-gray-100 disabled:cursor-not-allowed;
+}
+
+.input-error {
+  @apply border-red-500 focus:border-red-500 focus:ring-red-500;
+}
+
+/* Card styles */
+.card {
+  @apply bg-white rounded-lg shadow-sm border border-gray-200;
+}
+
+.card-header {
+  @apply px-4 py-3 border-b border-gray-200;
+}
+
+.card-body {
+  @apply p-4;
+}
+
+/* Badge styles */
+.badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+
+.badge-blue {
+  @apply bg-blue-100 text-blue-800;
+}
+
+.badge-green {
+  @apply bg-green-100 text-green-800;
+}
+
+.badge-yellow {
+  @apply bg-yellow-100 text-yellow-800;
+}
+
+.badge-red {
+  @apply bg-red-100 text-red-800;
+}
+
+/* License warning banner */
+.license-warning-banner {
+  @apply fixed top-0 left-0 right-0 z-50;
+  @apply bg-yellow-500 text-yellow-900 px-4 py-2;
+  @apply flex items-center justify-center gap-2;
+  @apply text-sm font-medium;
+}
+
+.license-expired-banner {
+  @apply bg-red-500 text-white;
+}
+
+/* Modal overlay */
+.modal-overlay {
+  @apply fixed inset-0 bg-black bg-opacity-50 z-40;
+  @apply flex items-center justify-center;
+}
+
+.modal-content {
+  @apply bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden;
+  @apply flex flex-col;
+}
+
+.modal-header {
+  @apply px-6 py-4 border-b border-gray-200;
+  @apply flex items-center justify-between;
+}
+
+.modal-body {
+  @apply px-6 py-4 overflow-y-auto flex-1;
+}
+
+.modal-footer {
+  @apply px-6 py-4 border-t border-gray-200;
+  @apply flex items-center justify-end gap-3;
+}
+
+/* Keyboard navigation indicator */
+.keyboard-focused {
+  @apply ring-2 ring-blue-500 ring-offset-2;
+}
+
+/* Animation classes */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideIn {
+  from { transform: translateY(-10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.animate-slide-in {
+  animation: slideIn 0.2s ease-out;
+}
+
+/* Stat card styles */
+.stat-card {
+  @apply bg-white rounded-lg p-4 border border-gray-200;
+}
+
+.stat-value {
+  @apply text-2xl font-bold text-gray-900;
+}
+
+.stat-label {
+  @apply text-sm text-gray-500 mt-1;
+}
+
+/* Price formatting */
+.price {
+  @apply font-mono text-right;
+}
+
+.price-positive {
+  @apply text-green-600;
+}
+
+/* Loading spinner */
+.spinner {
+  @apply animate-spin rounded-full border-2 border-gray-200 border-t-blue-600;
+}
+
+/* Empty state */
+.empty-state {
+  @apply flex flex-col items-center justify-center py-12 text-gray-500;
+}
+
+.empty-state-icon {
+  @apply w-16 h-16 text-gray-300 mb-4;
+}
+
+.empty-state-title {
+  @apply text-lg font-medium text-gray-700 mb-2;
+}
+
+.empty-state-description {
+  @apply text-sm text-gray-500 text-center max-w-md;
+}
