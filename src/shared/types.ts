@@ -18,11 +18,12 @@ import { z } from 'zod';
  * Each type is a meaningful business action, not a raw SQL operation.
  */
 export const OperationTypeSchema = z.enum([
-  'IMPORT',         // Bulk import from clipboard/file
-  'MANUAL_ADD',     // Single entry manual creation  
-  'BULK_EDIT',      // Bulk modification of existing entries
-  'BULK_DELETE',    // Soft-delete of multiple entries
-  'SYSTEM_MIGRATE', // System-initiated data migration
+  'IMPORT',           // Bulk import from clipboard/file
+  'MANUAL_ADD',       // Single entry manual creation  
+  'BULK_EDIT',        // Bulk modification of existing entries
+  'BULK_DELETE',      // Soft-delete of multiple entries
+  'SYSTEM_MIGRATE',   // System-initiated data migration
+  'SUPPLIER_CREATE',  // Supplier entity creation
 ]);
 export type OperationType = z.infer<typeof OperationTypeSchema>;
 
@@ -132,11 +133,10 @@ export const PriceEntrySchema = z.object({
   reference: z.string().min(1),
   designation: z.string().min(1),
   brand: z.string().min(1),
-  constructorRef: z.string().nullable(),
   supplierName: z.string().min(1),
   supplierPhone: z.string().nullable(),
   price: z.number().positive(),
-  currency: z.string().default('MAD'),
+  currency: z.string().default('DZD'),
   entryDate: z.date(),
   arrivageDate: z.date().nullable(),
   notes: z.string().nullable(),
@@ -155,16 +155,158 @@ export const CreatePriceEntrySchema = z.object({
   reference: z.string().min(1, 'Reference is required'),
   designation: z.string().min(1, 'Designation is required'),
   brand: z.string().min(1, 'Brand is required'),
-  constructorRef: z.string().optional().nullable(),
   supplierName: z.string().min(1, 'Supplier name is required'),
   supplierPhone: z.string().optional().nullable(),
   price: z.number().positive('Price must be positive'),
-  currency: z.string().default('MAD'),
+  currency: z.string().default('DZD'),
   arrivageDate: z.date().optional().nullable(),
   notes: z.string().optional().nullable(),
 });
 
 export type CreatePriceEntry = z.infer<typeof CreatePriceEntrySchema>;
+
+// ===========================================
+// SUPPLIER TYPES (CORE DOMAIN)
+// ===========================================
+// Supplier is a core domain entity that will be reused across:
+// - Imports (linking price entries to normalized suppliers)
+// - Pricing history (tracking supplier price patterns)
+// - Provenance (auditing data sources)
+// - Audit logs (traceability)
+//
+// DESIGN DECISIONS:
+// 1. Contacts are NORMALIZED (not JSON) for queryability and integrity
+// 2. Phone/Email are separate types with different validation rules
+// 3. Channel is only relevant for PHONE contacts
+// 4. At least ONE phone is REQUIRED (business rule)
+
+/**
+ * Contact type enumeration - mirrors Prisma enum.
+ * PHONE and EMAIL have different validation and behavior rules.
+ */
+export const ContactTypeSchema = z.enum(['PHONE', 'EMAIL']);
+export type ContactType = z.infer<typeof ContactTypeSchema>;
+
+/**
+ * Phone channel enumeration - determines communication method.
+ * Only applicable when contact type is PHONE.
+ */
+export const PhoneChannelSchema = z.enum(['REGULAR', 'WHATSAPP', 'VIBER', 'TELEGRAM']);
+export type PhoneChannel = z.infer<typeof PhoneChannelSchema>;
+
+/**
+ * Supplier contact schema - represents a single contact entry.
+ * 
+ * INVARIANTS:
+ * - Channels array is required for PHONE type (can have multiple), null for EMAIL
+ * - Value must be valid phone format or email format based on type
+ * - Only one primary contact per type per supplier
+ */
+export const SupplierContactSchema = z.object({
+  id: z.string().uuid(),
+  supplierId: z.string().uuid(),
+  type: ContactTypeSchema,
+  channels: z.array(PhoneChannelSchema).nullable(), // Only for PHONE type, multiple allowed
+  value: z.string().min(1),
+  isPrimary: z.boolean().default(false),
+  createdAt: z.date(),
+});
+export type SupplierContact = z.infer<typeof SupplierContactSchema>;
+
+/**
+ * Full Supplier entity with all fields.
+ */
+export const SupplierSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(2, 'Name must be at least 2 characters'),
+  address: z.string().min(5, 'Address must be at least 5 characters'),
+  website: z.string().url().nullable().optional(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  contacts: z.array(SupplierContactSchema),
+  operationId: z.string().nullable(),
+});
+export type Supplier = z.infer<typeof SupplierSchema>;
+
+/**
+ * Input for creating a new contact.
+ * ID and timestamps are auto-generated.
+ */
+export const CreateSupplierContactSchema = z.object({
+  type: ContactTypeSchema,
+  channels: z.array(PhoneChannelSchema).nullable().optional(), // Multiple channels for PHONE
+  value: z.string().min(1, 'Contact value is required'),
+  isPrimary: z.boolean().default(false),
+});
+export type CreateSupplierContact = z.infer<typeof CreateSupplierContactSchema>;
+
+/**
+ * Input for creating a new supplier.
+ * 
+ * VALIDATION RULES (enforced at service layer):
+ * - name: required, min 2 chars, trimmed
+ * - address: required, min 5 chars
+ * - website: optional, must be valid URL if present
+ * - phones: at least one entry required, valid format
+ * - emails: optional, valid format if present
+ * - No duplicate contact values within same supplier
+ */
+export const CreateSupplierSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters').transform(s => s.trim()),
+  address: z.string().min(5, 'Address must be at least 5 characters'),
+  website: z.string().url('Invalid URL format').optional().nullable().or(z.literal('')),
+  phones: z.array(CreateSupplierContactSchema.extend({
+    type: z.literal('PHONE'),
+    // Multiple channels allowed per phone (e.g., both Regular and WhatsApp)
+    channels: z.array(PhoneChannelSchema).min(1, 'At least one channel is required'),
+  })).min(1, 'At least one phone number is required'),
+  emails: z.array(CreateSupplierContactSchema.extend({
+    type: z.literal('EMAIL'),
+    channels: z.null().optional(), // Channels not used for emails
+  })).optional().default([]),
+});
+export type CreateSupplier = z.infer<typeof CreateSupplierSchema>;
+
+/**
+ * Result of supplier creation operation.
+ */
+export interface CreateSupplierResult {
+  success: boolean;
+  supplier?: Supplier;
+  operationId?: string;
+  errors?: SupplierValidationError[];
+}
+
+/**
+ * Validation error for supplier form.
+ */
+export interface SupplierValidationError {
+  field: string;
+  message: string;
+  index?: number; // For array fields (phones, emails)
+}
+
+/**
+ * Paginated list result for suppliers.
+ */
+export interface SupplierListResult {
+  data: Supplier[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+/**
+ * Query parameters for listing suppliers.
+ */
+export interface SupplierQueryParams {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  sortBy?: 'name' | 'createdAt';
+  sortDirection?: 'asc' | 'desc';
+}
 
 // ===========================================
 // QUERY & FILTER TYPES
@@ -206,7 +348,6 @@ export const ImportRowSchema = z.object({
   reference: z.string(),
   designation: z.string(),
   brand: z.string(),
-  constructorRef: z.string().optional(),
   supplierName: z.string(),
   supplierPhone: z.string().optional(),
   price: z.number(),
@@ -558,8 +699,6 @@ export const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'designation', header: 'Désignation', accessorKey: 'designation', visible: true, sortable: true, filterable: true },
   { id: 'brand', header: 'Marque', accessorKey: 'brand', visible: true, sortable: true, filterable: true },
   { id: 'supplierName', header: 'Fournisseur', accessorKey: 'supplierName', visible: true, sortable: true, filterable: true },
-  { id: 'supplierPhone', header: 'Téléphone', accessorKey: 'supplierPhone', visible: true, sortable: true, filterable: true },
-  { id: 'constructorRef', header: 'Réf. Constructeur', accessorKey: 'constructorRef', visible: true, sortable: true, filterable: true },
   { id: 'price', header: 'Prix', accessorKey: 'price', visible: true, sortable: true, filterable: true, width: 100 },
   { id: 'entryDate', header: 'Date', accessorKey: 'entryDate', visible: true, sortable: true, filterable: true },
 ];

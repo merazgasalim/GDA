@@ -23,7 +23,7 @@
  * 4. Full integration with Operations Log
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAppStore, selectCanImport } from '../store';
 import type {
   CSVParsedData,
@@ -37,6 +37,7 @@ import type {
 } from '../../shared/types';
 import { CSV_TARGET_FIELD_LABELS } from '../../shared/types';
 import DuplicateStrategyModal from './DuplicateStrategyModal';
+import AddSupplierModal from './AddSupplierModal';
 
 // ===========================================
 // TYPES
@@ -66,6 +67,8 @@ interface WizardState {
   duplicateAnalysis: DuplicateAnalysisResult | null;
   showDuplicateModal: boolean;
   isAnalyzingDuplicates: boolean;
+  // Add Supplier Modal state
+  showAddSupplierModal: boolean;
   // UI state
   isParsing: boolean;
   isValidating: boolean;
@@ -92,6 +95,7 @@ const initialState: WizardState = {
   duplicateAnalysis: null,
   showDuplicateModal: false,
   isAnalyzingDuplicates: false,
+  showAddSupplierModal: false,
   isParsing: false,
   isValidating: false,
   isImporting: false,
@@ -345,10 +349,10 @@ export const CSVImportWizard: React.FC = () => {
     const value = e.target.value;
     
     if (value === '__add_new__') {
+      // Open the AddSupplierModal instead of inline form
       setState(prev => ({
         ...prev,
-        isAddingNewSupplier: true,
-        supplier: { name: '', isNew: true },
+        showAddSupplierModal: true,
       }));
     } else {
       setState(prev => ({
@@ -359,19 +363,18 @@ export const CSVImportWizard: React.FC = () => {
     }
   };
 
-  const handleNewSupplierConfirm = () => {
-    if (state.newSupplierName.trim()) {
-      setState(prev => ({
-        ...prev,
-        supplier: {
-          name: prev.newSupplierName.trim(),
-          phone: prev.newSupplierPhone.trim() || undefined,
-          isNew: true,
-        },
-        isAddingNewSupplier: false,
-      }));
-    }
-  };
+  // Callback when supplier is created via AddSupplierModal
+  const handleSupplierCreated = useCallback(async () => {
+    // Refresh suppliers list
+    await loadSuppliers();
+    // Close the modal
+    setState(prev => ({ ...prev, showAddSupplierModal: false }));
+  }, []);
+
+  // Close AddSupplierModal without action
+  const handleCloseAddSupplierModal = useCallback(() => {
+    setState(prev => ({ ...prev, showAddSupplierModal: false }));
+  }, []);
 
   const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setState(prev => ({ ...prev, importDate: e.target.value }));
@@ -594,10 +597,6 @@ export const CSVImportWizard: React.FC = () => {
               previewRows={previewRows}
               onMappingChange={handleMappingChange}
               onSupplierChange={handleSupplierChange}
-              onNewSupplierNameChange={(v) => setState(p => ({ ...p, newSupplierName: v }))}
-              onNewSupplierPhoneChange={(v) => setState(p => ({ ...p, newSupplierPhone: v }))}
-              onNewSupplierConfirm={handleNewSupplierConfirm}
-              onNewSupplierCancel={() => setState(p => ({ ...p, isAddingNewSupplier: false }))}
               onDateChange={handleDateChange}
             />
           )}
@@ -635,6 +634,13 @@ export const CSVImportWizard: React.FC = () => {
           onClose={handleCloseDuplicateModal}
         />
       )}
+
+      {/* Add Supplier Modal */}
+      <AddSupplierModal
+        isOpen={state.showAddSupplierModal}
+        onClose={handleCloseAddSupplierModal}
+        refreshSuppliers={handleSupplierCreated}
+      />
     </div>
   );
 };
@@ -806,10 +812,6 @@ interface Step2Props {
   previewRows: string[][];
   onMappingChange: (columnIndex: number, field: CSVTargetField) => void;
   onSupplierChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
-  onNewSupplierNameChange: (value: string) => void;
-  onNewSupplierPhoneChange: (value: string) => void;
-  onNewSupplierConfirm: () => void;
-  onNewSupplierCancel: () => void;
   onDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
@@ -818,10 +820,6 @@ const Step2FieldMapping: React.FC<Step2Props> = ({
   previewRows,
   onMappingChange,
   onSupplierChange,
-  onNewSupplierNameChange,
-  onNewSupplierPhoneChange,
-  onNewSupplierConfirm,
-  onNewSupplierCancel,
   onDateChange,
 }) => (
   <div className="space-y-4">
@@ -878,61 +876,28 @@ const Step2FieldMapping: React.FC<Step2Props> = ({
         <label className="block text-sm font-medium text-gray-700 mb-1">
           Fournisseur <span className="text-red-500">*</span>
         </label>
-        {state.isAddingNewSupplier ? (
-          <div className="space-y-2">
-            <input
-              type="text"
-              placeholder="Nom du fournisseur"
-              value={state.newSupplierName}
-              onChange={(e) => onNewSupplierNameChange(e.target.value)}
-              className="input text-sm"
-              autoFocus
-            />
-            <input
-              type="text"
-              placeholder="Téléphone (optionnel)"
-              value={state.newSupplierPhone}
-              onChange={(e) => onNewSupplierPhoneChange(e.target.value)}
-              className="input text-sm"
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={onNewSupplierConfirm}
-                disabled={!state.newSupplierName.trim()}
-                className="btn btn-primary btn-sm"
-              >
-                Confirmer
-              </button>
-              <button onClick={onNewSupplierCancel} className="btn btn-secondary btn-sm">
-                Annuler
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <select
-              value={state.supplier.name || ''}
-              onChange={onSupplierChange}
-              className="input text-sm"
-            >
-              <option value="">-- Sélectionner --</option>
-              {state.existingSuppliers.length > 0 ? (
-                state.existingSuppliers.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))
-              ) : (
-                <option value="" disabled>Aucun fournisseur existant</option>
-              )}
-              <option value="__add_new__">+ Ajouter Fournisseur</option>
-            </select>
-            {state.supplier.name && (
-              <div className="text-xs text-gray-600">
-                Fournisseur: <span className="font-medium">{state.supplier.name}</span>
-                {state.supplier.isNew && <span className="ml-1 text-green-600">(nouveau)</span>}
-              </div>
+        <div className="space-y-2">
+          <select
+            value={state.supplier.name || ''}
+            onChange={onSupplierChange}
+            className="input text-sm"
+          >
+            <option value="">-- Sélectionner --</option>
+            {state.existingSuppliers.length > 0 ? (
+              state.existingSuppliers.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))
+            ) : (
+              <option value="" disabled>Aucun fournisseur existant</option>
             )}
-          </div>
-        )}
+            <option value="__add_new__">+ Ajouter Fournisseur</option>
+          </select>
+          {state.supplier.name && (
+            <div className="text-xs text-gray-600">
+              Fournisseur: <span className="font-medium">{state.supplier.name}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Date picker */}

@@ -10,12 +10,14 @@
  * - Pagination
  * - Keyboard navigation
  * - Fast rendering with virtualization
+ * - Clickable supplier name to view details
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore, selectVisibleColumns } from '../store';
 import type { PriceEntry, ColumnConfig } from '../../shared/types';
 import { debounce } from 'lodash';
+import { SupplierInfoModal } from './SupplierInfoModal';
 
 // ===========================================
 // COLUMN FILTER COMPONENT
@@ -57,6 +59,31 @@ const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value
 };
 
 // ===========================================
+// SUPPLIER NAME CELL COMPONENT
+// ===========================================
+
+interface SupplierNameCellProps {
+  supplierName: string;
+  onSupplierClick: (name: string) => void;
+}
+
+const SupplierNameCell: React.FC<SupplierNameCellProps> = ({ supplierName, onSupplierClick }) => {
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent row selection
+    onSupplierClick(supplierName);
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      className="text-left text-blue-600 hover:text-blue-800 hover:underline focus:outline-none focus:underline"
+    >
+      {supplierName}
+    </button>
+  );
+};
+
+// ===========================================
 // TABLE ROW COMPONENT
 // ===========================================
 
@@ -66,6 +93,7 @@ interface TableRowProps {
   isSelected: boolean;
   onSelect: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
+  onSupplierClick: (supplierName: string) => void;
 }
 
 const TableRow: React.FC<TableRowProps> = ({
@@ -74,12 +102,13 @@ const TableRow: React.FC<TableRowProps> = ({
   isSelected,
   onSelect,
   onKeyDown,
+  onSupplierClick,
 }) => {
   const formatValue = (column: ColumnConfig, value: any): string => {
     if (value === null || value === undefined) return '-';
     
     if (column.accessorKey === 'price') {
-      return `${Number(value).toFixed(2)} MAD`;
+      return `${Number(value).toFixed(2)}`;
     }
     
     if (column.accessorKey === 'entryDate' || column.accessorKey === 'arrivageDate') {
@@ -87,6 +116,22 @@ const TableRow: React.FC<TableRowProps> = ({
     }
     
     return String(value);
+  };
+
+  const renderCellContent = (column: ColumnConfig) => {
+    const value = entry[column.accessorKey];
+
+    // Special handling for supplier name column - make it clickable
+    if (column.accessorKey === 'supplierName') {
+      return (
+        <SupplierNameCell
+          supplierName={value as string}
+          onSupplierClick={onSupplierClick}
+        />
+      );
+    }
+
+    return formatValue(column, value);
   };
 
   return (
@@ -102,7 +147,7 @@ const TableRow: React.FC<TableRowProps> = ({
           className={column.accessorKey === 'price' ? 'price text-right font-mono' : ''}
           style={column.width ? { width: column.width } : undefined}
         >
-          {formatValue(column, entry[column.accessorKey])}
+          {renderCellContent(column)}
         </td>
       ))}
     </tr>
@@ -129,6 +174,22 @@ export const DataGrid: React.FC = () => {
   const fetchEntries = useAppStore((state) => state.fetchEntries);
 
   const tableRef = useRef<HTMLTableElement>(null);
+
+  // Supplier info modal state
+  const [supplierModalOpen, setSupplierModalOpen] = useState(false);
+  const [selectedSupplierName, setSelectedSupplierName] = useState<string>('');
+
+  // Handle supplier name click
+  const handleSupplierClick = useCallback((supplierName: string) => {
+    setSelectedSupplierName(supplierName);
+    setSupplierModalOpen(true);
+  }, []);
+
+  // Close supplier modal
+  const closeSupplierModal = useCallback(() => {
+    setSupplierModalOpen(false);
+    setSelectedSupplierName('');
+  }, []);
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent, index: number) => {
@@ -265,6 +326,7 @@ export const DataGrid: React.FC = () => {
                 isSelected={entry.id === selectedEntryId}
                 onSelect={() => setSelectedEntry(entry.id)}
                 onKeyDown={(e) => handleKeyDown(e, index)}
+                onSupplierClick={handleSupplierClick}
               />
             ))}
           </tbody>
@@ -277,6 +339,13 @@ export const DataGrid: React.FC = () => {
           <div className="spinner w-8 h-8" />
         </div>
       )}
+
+      {/* Supplier Info Modal */}
+      <SupplierInfoModal
+        supplierName={selectedSupplierName}
+        isOpen={supplierModalOpen}
+        onClose={closeSupplierModal}
+      />
     </div>
   );
 };

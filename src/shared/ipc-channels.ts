@@ -51,6 +51,20 @@ export const IPC_CHANNELS = {
   IMPORT_CSV_ANALYZE_DUPLICATES: 'import:csv-analyze-duplicates',
 
   // ===========================================
+  // SUPPLIER OPERATIONS (CORE DOMAIN)
+  // ===========================================
+  // Supplier management for the normalized supplier entity.
+  // See src/main/services/supplier-service.ts for implementation.
+  SUPPLIER_CREATE: 'supplier:create',
+  SUPPLIER_GET_LIST: 'supplier:get-list',
+  SUPPLIER_GET_BY_ID: 'supplier:get-by-id',
+  SUPPLIER_UPDATE: 'supplier:update',
+  SUPPLIER_DELETE: 'supplier:delete',
+  SUPPLIER_VALIDATE: 'supplier:validate',
+  SUPPLIER_SEARCH: 'supplier:search',
+  SUPPLIER_GET_PHONES_BY_NAME: 'supplier:get-phones-by-name',
+
+  // ===========================================
   // EXPORT OPERATIONS (LICENSE REQUIRED)
   // ===========================================
   EXPORT_CSV: 'export:csv',

@@ -20,15 +20,21 @@ import { DEFAULT_LICENSE_STATUS } from '../../shared/types';
 // STORE TYPES
 // ===========================================
 
+// Page navigation types
+export type AppPage = 'main' | 'suppliers';
+
 interface AppState {
   // License
   licenseStatus: LicenseStatus;
   isLicenseLoading: boolean;
   
+  // Navigation
+  currentPage: AppPage;
+  
   // Data
   entries: PriceEntry[];
   totalEntries: number;
-  currentPage: number;
+  currentPageNum: number;
   pageSize: number;
   totalPages: number;
   isLoading: boolean;
@@ -48,6 +54,7 @@ interface AppState {
   isExportModalOpen: boolean;
   isColumnSettingsOpen: boolean;
   isOperationsLogOpen: boolean;
+  isAddSupplierModalOpen: boolean;
   
   // Operations Log - Crash Recovery
   hasIncompleteOperations: boolean;
@@ -67,6 +74,9 @@ interface AppActions {
   setLicenseStatus: (status: LicenseStatus) => void;
   setLicenseLoading: (loading: boolean) => void;
   fetchLicenseStatus: () => Promise<void>;
+  
+  // Navigation
+  setCurrentPage: (page: AppPage) => void;
   
   // Data
   setEntries: (result: PaginatedResult<PriceEntry>) => void;
@@ -102,11 +112,16 @@ interface AppActions {
   toggleColumnSettings: () => void;
   openOperationsLog: () => void;
   closeOperationsLog: () => void;
+  openAddSupplierModal: () => void;
+  closeAddSupplierModal: () => void;
   setHasIncompleteOperations: (has: boolean) => void;
   setIncompleteOperationsResolved: (resolved: boolean) => void;
   
   // Stats
   fetchStats: () => Promise<void>;
+  
+  // Suppliers
+  refreshSuppliers: () => Promise<void>;
 }
 
 // ===========================================
@@ -117,9 +132,12 @@ const initialState: AppState = {
   licenseStatus: DEFAULT_LICENSE_STATUS,
   isLicenseLoading: true,
   
+  // Navigation
+  currentPage: 'main',
+  
   entries: [],
   totalEntries: 0,
-  currentPage: 1,
+  currentPageNum: 1,
   pageSize: 50,
   totalPages: 0,
   isLoading: false,
@@ -135,8 +153,6 @@ const initialState: AppState = {
     { id: 'designation', header: 'Désignation', accessorKey: 'designation', visible: true, sortable: true, filterable: true },
     { id: 'brand', header: 'Marque', accessorKey: 'brand', visible: true, sortable: true, filterable: true },
     { id: 'supplierName', header: 'Fournisseur', accessorKey: 'supplierName', visible: true, sortable: true, filterable: true },
-    { id: 'supplierPhone', header: 'Téléphone', accessorKey: 'supplierPhone', visible: true, sortable: true, filterable: true },
-    { id: 'constructorRef', header: 'Réf. Constructeur', accessorKey: 'constructorRef', visible: true, sortable: true, filterable: true },
     { id: 'price', header: 'Prix', accessorKey: 'price', visible: true, sortable: true, filterable: true, width: 100 },
     { id: 'entryDate', header: 'Date', accessorKey: 'entryDate', visible: true, sortable: true, filterable: true },
   ],
@@ -146,6 +162,7 @@ const initialState: AppState = {
   isExportModalOpen: false,
   isColumnSettingsOpen: false,
   isOperationsLogOpen: false,
+  isAddSupplierModalOpen: false,
   
   // Operations Log - Crash Recovery
   hasIncompleteOperations: false,
@@ -187,7 +204,7 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
   setEntries: (result) => set({
     entries: result.data,
     totalEntries: result.total,
-    currentPage: result.page,
+    currentPageNum: result.page,
     totalPages: result.totalPages,
   }),
   
@@ -201,7 +218,7 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
     
     try {
       const params: QueryParams = {
-        page: state.currentPage,
+        page: state.currentPageNum,
         pageSize: state.pageSize,
         sortColumn: state.sortColumn || undefined,
         sortDirection: state.sortDirection,
@@ -234,13 +251,16 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
   // PAGINATION ACTIONS
   // ===========================================
   
-  setPage: (page) => {
-    set({ currentPage: page });
+  // Navigation
+  setCurrentPage: (page) => set({ currentPage: page }),
+  
+  setPage: (pageNum) => {
+    set({ currentPageNum: pageNum });
     get().fetchEntries();
   },
   
   setPageSize: (size) => {
-    set({ pageSize: size, currentPage: 1 });
+    set({ pageSize: size, currentPageNum: 1 });
     get().fetchEntries();
   },
 
@@ -249,7 +269,7 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
   // ===========================================
   
   setGlobalSearch: (search) => {
-    set({ globalSearch: search, currentPage: 1 });
+    set({ globalSearch: search, currentPageNum: 1 });
     // Debounce would be applied in the component
   },
   
@@ -264,21 +284,21 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
       } else {
         newFilters.splice(existingIndex, 1);
       }
-      set({ columnFilters: newFilters, currentPage: 1 });
+      set({ columnFilters: newFilters, currentPageNum: 1 });
     } else if (filter.value) {
-      set({ columnFilters: [...filters, filter], currentPage: 1 });
+      set({ columnFilters: [...filters, filter], currentPageNum: 1 });
     }
   },
   
   removeColumnFilter: (column) => {
     set({
       columnFilters: get().columnFilters.filter((f) => f.column !== column),
-      currentPage: 1,
+      currentPageNum: 1,
     });
   },
   
   clearAllFilters: () => {
-    set({ columnFilters: [], globalSearch: '', currentPage: 1 });
+    set({ columnFilters: [], globalSearch: '', currentPageNum: 1 });
     get().fetchEntries();
   },
 
@@ -331,6 +351,10 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
   openOperationsLog: () => set({ isOperationsLogOpen: true }),
   closeOperationsLog: () => set({ isOperationsLogOpen: false }),
   
+  // Add Supplier Modal
+  openAddSupplierModal: () => set({ isAddSupplierModalOpen: true }),
+  closeAddSupplierModal: () => set({ isAddSupplierModalOpen: false }),
+  
   // Incomplete Operations Dialog
   setHasIncompleteOperations: (has) => set({ hasIncompleteOperations: has }),
   setIncompleteOperationsResolved: (resolved) => set({ incompleteOperationsResolved: resolved }),
@@ -352,6 +376,30 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
       });
     } catch (error) {
       console.error('Failed to fetch stats:', error);
+    }
+  },
+  
+  // ===========================================
+  // SUPPLIER ACTIONS
+  // ===========================================
+  
+  refreshSuppliers: async () => {
+    // Currently a placeholder - can be extended to manage a suppliers list
+    // For now, this is called after supplier creation to refresh any dependent data
+    console.log('[AppStore] Refreshing suppliers...');
+    // Optionally refresh stats which includes supplier count
+    try {
+      const stats = await window.electronApi.database.getStats();
+      set({
+        stats: {
+          totalEntries: stats.totalEntries,
+          uniqueReferences: stats.uniqueReferences,
+          uniqueSuppliers: stats.uniqueSuppliers,
+          uniqueBrands: stats.uniqueBrands,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to refresh supplier data:', error);
     }
   },
 }));

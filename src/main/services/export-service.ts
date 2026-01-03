@@ -102,7 +102,6 @@ function entriesToCsv(entries: PriceEntry[]): string {
     'Marque',
     'Fournisseur',
     'Téléphone',
-    'Réf. Constructeur',
     'Prix',
     'Date',
     'Notes',
@@ -114,7 +113,6 @@ function entriesToCsv(entries: PriceEntry[]): string {
     escapeCsvValue(entry.brand),
     escapeCsvValue(entry.supplierName),
     escapeCsvValue(entry.supplierPhone),
-    escapeCsvValue(entry.constructorRef),
     escapeCsvValue(entry.price),
     escapeCsvValue(formatDate(entry.entryDate)),
     escapeCsvValue(entry.notes),
@@ -253,7 +251,6 @@ export async function exportToXlsx(
       { header: 'Marque', key: 'brand', width: 15 },
       { header: 'Fournisseur', key: 'supplierName', width: 20 },
       { header: 'Téléphone', key: 'supplierPhone', width: 15 },
-      { header: 'Réf. Constructeur', key: 'constructorRef', width: 18 },
       { header: 'Prix', key: 'price', width: 12 },
       { header: 'Date', key: 'entryDate', width: 12 },
       { header: 'Notes', key: 'notes', width: 25 },
@@ -278,7 +275,6 @@ export async function exportToXlsx(
         brand: entry.brand,
         supplierName: entry.supplierName,
         supplierPhone: entry.supplierPhone || '',
-        constructorRef: entry.constructorRef || '',
         price: entry.price,
         entryDate: formatDate(entry.entryDate),
         notes: entry.notes || '',
@@ -286,7 +282,7 @@ export async function exportToXlsx(
     });
 
     // Format price column
-    worksheet.getColumn('price').numFmt = '#,##0.00 "MAD"';
+    worksheet.getColumn('price').numFmt = '#,##0.00 "DZD"';
     worksheet.getColumn('price').alignment = { horizontal: 'right' };
 
     // Add alternating row colors

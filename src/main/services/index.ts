@@ -6,3 +6,4 @@ export * from './import-service';
 export * from './export-service';
 export * from './operation-service';
 export * from './csv-parser';
+export * from './supplier-service';

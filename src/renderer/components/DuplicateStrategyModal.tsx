@@ -43,9 +43,9 @@ const DuplicateStrategyModal: React.FC<DuplicateStrategyModalProps> = ({
 
   const formatPrice = (price: number | null): string => {
     if (price === null) return 'N/A';
-    return price.toLocaleString('fr-MA', { 
+    return price.toLocaleString('fr-DZ', { 
       style: 'currency', 
-      currency: 'MAD',
+      currency: 'DZD',
       minimumFractionDigits: 2,
     });
   };

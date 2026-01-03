@@ -23,6 +23,8 @@ import {
   ColumnSettings,
   OperationsLogModal,
   IncompleteOperationsDialog,
+  AddSupplierModal,
+  SuppliersPage,
 } from './components';
 
 export const App: React.FC = () => {
@@ -30,6 +32,7 @@ export const App: React.FC = () => {
   const fetchEntries = useAppStore((state) => state.fetchEntries);
   const fetchStats = useAppStore((state) => state.fetchStats);
   const isLicenseLoading = useAppStore((state) => state.isLicenseLoading);
+  const currentPage = useAppStore((state) => state.currentPage);
   
   // Incomplete operations state for crash recovery
   const [showIncompleteOperations, setShowIncompleteOperations] = useState(false);
@@ -100,21 +103,28 @@ export const App: React.FC = () => {
 
       {/* Main Layout */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <Header />
+        {/* Render page based on current navigation state */}
+        {currentPage === 'suppliers' ? (
+          <SuppliersPage />
+        ) : (
+          <>
+            {/* Header */}
+            <Header />
 
-        {/* Main Content */}
-        <main className="flex-1 overflow-hidden p-6 relative">
-          <div className="h-full bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col">
-            <DataGrid />
-          </div>
-          
-          {/* Column Settings Panel (positioned relative to main) */}
-          <ColumnSettings />
-        </main>
+            {/* Main Content */}
+            <main className="flex-1 overflow-hidden p-6 relative">
+              <div className="h-full bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col">
+                <DataGrid />
+              </div>
+              
+              {/* Column Settings Panel (positioned relative to main) */}
+              <ColumnSettings />
+            </main>
 
-        {/* Footer */}
-        <Footer />
+            {/* Footer */}
+            <Footer />
+          </>
+        )}
       </div>
 
       {/* Modals */}
@@ -122,6 +132,7 @@ export const App: React.FC = () => {
       <CSVImportWizard />
       <ExportModal />
       <OperationsLogModal />
+      <AddSupplierModal />
       
       {/* Incomplete Operations Dialog (Crash Recovery) */}
       <IncompleteOperationsDialog

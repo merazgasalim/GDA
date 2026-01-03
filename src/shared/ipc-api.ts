@@ -27,6 +27,13 @@ import type {
   CSVImportPreview,
   CSVFileReadResult,
   DuplicateAnalysisResult,
+  // Supplier types
+  CreateSupplier,
+  CreateSupplierResult,
+  Supplier,
+  SupplierListResult,
+  SupplierQueryParams,
+  SupplierValidationError,
 } from './types';
 
 // ===========================================
@@ -167,6 +174,72 @@ export interface ImportLogEntry {
 }
 
 // ===========================================
+// SUPPLIER API (CORE DOMAIN)
+// ===========================================
+/**
+ * Supplier API for managing normalized supplier entities.
+ * 
+ * Suppliers are core domain objects used across:
+ * - Imports (linking price entries)
+ * - Pricing history
+ * - Provenance tracking
+ * - Audit logs
+ */
+export interface SupplierApi {
+  /**
+   * Create a new supplier with contacts.
+   * Validates all fields and persists in a transaction.
+   * Creates an OperationLog entry for audit trail.
+   */
+  create: (input: CreateSupplier) => Promise<CreateSupplierResult>;
+  
+  /**
+   * Get paginated list of suppliers.
+   */
+  getList: (params?: SupplierQueryParams) => Promise<SupplierListResult>;
+  
+  /**
+   * Get a single supplier by ID.
+   */
+  getById: (id: string) => Promise<Supplier | null>;
+  
+  /**
+   * Delete a supplier (cascades to contacts).
+   * Returns true if deleted, false if not found.
+   */
+  delete: (id: string) => Promise<boolean>;
+  
+  /**
+   * Validate supplier input without persisting.
+   * Returns validation errors if any.
+   */
+  validate: (input: CreateSupplier) => Promise<{
+    isValid: boolean;
+    errors: SupplierValidationError[];
+  }>;
+  
+  /**
+   * Search suppliers by name (for autocomplete).
+   */
+  search: (query: string, limit?: number) => Promise<Supplier[]>;
+  
+  /**
+   * Get phone numbers for a supplier by name.
+   * Used to show additional phone numbers in the data grid.
+   */
+  getPhonesByName: (supplierName: string) => Promise<SupplierPhoneInfo[]>;
+}
+
+/**
+ * Phone information for a supplier.
+ */
+export interface SupplierPhoneInfo {
+  value: string;
+  isPrimary: boolean;
+  channels: string[] | null;
+}
+
+// ===========================================
 // EXPORT API
 // ===========================================
 
@@ -260,6 +333,7 @@ export interface ElectronApi {
   settings: SettingsApi;
   dialog: DialogApi;
   operations: OperationsApi;
+  supplier: SupplierApi;
 }
 
 // Declare global window type extension

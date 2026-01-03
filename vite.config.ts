@@ -8,6 +8,9 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Prevent multiple electron startups
+let electronStarted = false;
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
@@ -17,7 +20,10 @@ export default defineConfig({
         // Main process entry
         entry: 'src/main/index.ts',
         onstart(options: { startup: () => void }) {
-          options.startup();
+          if (!electronStarted) {
+            electronStarted = true;
+            options.startup();
+          }
         },
         vite: {
           build: {

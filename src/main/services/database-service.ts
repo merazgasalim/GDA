@@ -96,6 +96,10 @@ export async function initializeDatabase(): Promise<{
     // Initialize operation service with the Prisma client
     const { setOperationServicePrisma } = await import('./operation-service');
     setOperationServicePrisma(prisma);
+    
+    // Initialize supplier service with the Prisma client
+    const { setSupplierServicePrisma } = await import('./supplier-service');
+    setSupplierServicePrisma(prisma);
 
     // For SQLCipher, we would set the key here:
     // await prisma.$executeRawUnsafe(`PRAGMA key = '${encryptionKey}'`);
@@ -225,7 +229,6 @@ function buildWhereClause(
         { designation: { contains: searchTerm } },
         { brand: { contains: searchTerm } },
         { supplierName: { contains: searchTerm } },
-        { constructorRef: { contains: searchTerm } },
         { supplierPhone: { contains: searchTerm } },
         { notes: { contains: searchTerm } },
       ],
@@ -306,7 +309,6 @@ export async function createEntry(data: CreatePriceEntry): Promise<PriceEntry> {
     data: {
       ...data,
       arrivageDate: data.arrivageDate ?? null,
-      constructorRef: data.constructorRef ?? null,
       supplierPhone: data.supplierPhone ?? null,
       notes: data.notes ?? null,
     },
@@ -331,7 +333,6 @@ export async function createEntriesBatch(
     ...entry,
     importBatchId: batchId,
     arrivageDate: entry.arrivageDate ?? null,
-    constructorRef: entry.constructorRef ?? null,
     supplierPhone: entry.supplierPhone ?? null,
     notes: entry.notes ?? null,
   }));
@@ -515,7 +516,6 @@ export async function deactivateAndInsertEntries(
       isActive: true,
       importBatchId: operationId,
       arrivageDate: entry.arrivageDate ?? null,
-      constructorRef: entry.constructorRef ?? null,
       supplierPhone: entry.supplierPhone ?? null,
       notes: entry.notes ?? null,
     }));
@@ -597,7 +597,6 @@ export async function createEntriesBatchWithOperation(
     isActive: true, // New entries are always active
     importBatchId: operationId, // For backwards compatibility
     arrivageDate: entry.arrivageDate ?? null,
-    constructorRef: entry.constructorRef ?? null,
     supplierPhone: entry.supplierPhone ?? null,
     notes: entry.notes ?? null,
   }));

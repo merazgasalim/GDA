@@ -257,7 +257,7 @@ export const ImportModal: React.FC = () => {
                                 <td>{row.brand}</td>
                                 <td>{row.supplierName}</td>
                                 <td className="text-right font-mono">
-                                  {row.price.toFixed(2)} MAD
+                                  {row.price.toFixed(2)} DZD
                                 </td>
                               </tr>
                             ))}

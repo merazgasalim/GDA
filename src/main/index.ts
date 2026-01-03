@@ -23,6 +23,15 @@ import { initializeDatabase, closeDatabase } from './services/database-service';
 import { validateLicense } from './services/license-service';
 
 // ===========================================
+// SINGLE INSTANCE LOCK (must be early!)
+// ===========================================
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  app.quit();
+}
+
+// ===========================================
 // SECURITY: Disable navigation to external URLs
 // ===========================================
 app.on('web-contents-created', (_event, contents) => {
@@ -158,24 +167,15 @@ app.on('certificate-error', (event, _webContents, _url, _error, _certificate, ca
   }
 });
 
-// ===========================================
-// SINGLE INSTANCE LOCK
-// ===========================================
-const gotTheLock = app.requestSingleInstanceLock();
-
-if (!gotTheLock) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    // Focus the window if user tries to open another instance
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.focus();
+// Handle second instance - focus existing window
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
     }
-  });
-}
+    mainWindow.focus();
+  }
+});
 
 // Export for testing
 export { mainWindow };

@@ -84,6 +84,32 @@ const electronApi: ElectronApi = {
   },
 
   // ===========================================
+  // SUPPLIER API (CORE DOMAIN)
+  // ===========================================
+  supplier: {
+    create: (input: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_CREATE, input),
+    
+    getList: (params?: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_GET_LIST, params),
+    
+    getById: (id: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_GET_BY_ID, id),
+    
+    delete: (id: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_DELETE, id),
+    
+    validate: (input: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_VALIDATE, input),
+    
+    search: (query: string, limit?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_SEARCH, query, limit),
+    
+    getPhonesByName: (supplierName: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_GET_PHONES_BY_NAME, supplierName),
+  },
+
+  // ===========================================
   // EXPORT API
   // ===========================================
   export: {

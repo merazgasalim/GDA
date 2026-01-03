@@ -420,7 +420,7 @@ export function validateCSVMapping(
  * - "123,45" (European format)
  * - "1 234.56" (with spaces)
  * - "1.234,56" (European with thousand separator)
- * - "$123.45" or "123.45 MAD" (with currency)
+ * - "$123.45" or "123.45 DZD" (with currency)
  * 
  * @param value - Price string to parse
  * @returns Parsed number or null if invalid
@@ -432,7 +432,7 @@ export function parsePrice(value: string): number | null {
 
   // Remove currency symbols and spaces
   let cleaned = value
-    .replace(/[€$£MAD\s]/gi, '')
+    .replace(/[€$£DZD\s]/gi, '')
     .replace(/\u00A0/g, '') // Non-breaking space
     .trim();
 

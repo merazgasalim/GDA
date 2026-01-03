@@ -11,3 +11,7 @@ export { Footer } from './Footer';
 export { ColumnSettings } from './ColumnSettings';
 export { OperationsLogModal } from './OperationsLogModal';
 export { IncompleteOperationsDialog } from './IncompleteOperationsDialog';
+export { AddSupplierModal } from './AddSupplierModal';
+export { EditSupplierModal } from './EditSupplierModal';
+export { SuppliersPage } from './SuppliersPage';
+export { SupplierInfoModal } from './SupplierInfoModal';

@@ -23,11 +23,10 @@ model PriceEntry {
   reference      String
   designation    String
   brand          String
-  constructorRef String?
   supplierName   String
   supplierPhone  String?
   price          Float
-  currency       String        @default("MAD")
+  currency       String        @default("DZD")
   entryDate      DateTime      @default(now())
   arrivageDate   DateTime?
   notes          String?
@@ -81,6 +80,84 @@ model ImportLog {
   errorMessage String?
 }
 
+// ===========================================
+// SUPPLIER DOMAIN (CORE ENTITY)
+// ===========================================
+// Supplier is a core domain object that will be reused across:
+// - Imports (linking price entries to normalized suppliers)
+// - Pricing history (tracking supplier price patterns)
+// - Provenance (auditing data sources)
+// - Audit logs (traceability)
+//
+// Design rationale:
+// 1. Contacts are NORMALIZED (not JSON) for queryability and integrity
+// 2. Phone/Email are separate types with different validation rules
+// 3. Channel is only relevant for PHONE contacts (WhatsApp, Viber, etc.)
+// 4. At least ONE phone is REQUIRED (business rule enforced at service layer)
+//
+// NOTE: SQLite doesn't support enums, so we use String with validation at service layer.
+// Valid ContactType values: 'PHONE', 'EMAIL'
+// Valid PhoneChannel values: 'REGULAR', 'WHATSAPP', 'VIBER', 'TELEGRAM'
+
+/// Supplier entity - core domain object for supply chain management.
+/// 
+/// INVARIANTS:
+/// - Must have at least one PHONE contact (enforced at service layer)
+/// - Name + Address combination uniquely identifies a supplier context
+/// - Same name with different addresses is allowed (different branches/locations)
+model Supplier {
+  id        String   @id @default(uuid())
+  name      String   // Required, min 2 chars, trimmed
+  address   String   // Required, min 5 chars
+  website   String?  // Optional, must be valid URL if present
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Normalized contacts - NOT embedded JSON for queryability
+  contacts  SupplierContact[]
+  
+  // Audit trail link
+  operationId String?
+  operation   OperationLog? @relation(fields: [operationId], references: [id])
+
+  @@index([name])
+  @@index([createdAt])
+  @@index([operationId])
+}
+
+/// Normalized contact for a supplier.
+/// 
+/// DESIGN DECISIONS:
+/// - Separated from Supplier to allow multiple contacts per type
+/// - Channel is nullable (only used for PHONE type)
+/// - isPrimary enforces only ONE primary per type per supplier (at service layer)
+/// - Duplicate values across different suppliers ARE allowed (same phone, different suppliers)
+/// - Duplicate values within same supplier are NOT allowed (enforced at service layer)
+///
+/// NOTE: type and channel are String (not enum) because SQLite doesn't support enums.
+/// Valid type values: 'PHONE', 'EMAIL'
+/// Valid channel values: 'REGULAR', 'WHATSAPP', 'VIBER', 'TELEGRAM', null
+model SupplierContact {
+  id         String   @id @default(uuid())
+  supplierId String
+  type       String   // 'PHONE' or 'EMAIL'
+  channel    String?  // Only used when type=PHONE: 'REGULAR', 'WHATSAPP', 'VIBER', 'TELEGRAM'
+  value      String   // Phone number or email address
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId])
+  @@index([type])
+  @@index([value])
+  @@index([supplierId, type, isPrimary])
+}
+
+// ===========================================
+// OPERATIONS LOG (AUDIT TRAIL)
+// ===========================================
+
 /// Central audit log for all data-modifying operations.
 ///
 /// CRITICAL INVARIANTS:
@@ -94,7 +171,7 @@ model ImportLog {
 /// may be updated (PENDING->COMPLETED, COMPLETED->ABANDONED).
 model OperationLog {
   id                   String       @id @default(uuid())
-  /// Operation type: IMPORT | MANUAL_ADD | BULK_EDIT | BULK_DELETE | SYSTEM_MIGRATE
+  /// Operation type: IMPORT | MANUAL_ADD | BULK_EDIT | BULK_DELETE | SYSTEM_MIGRATE | SUPPLIER_CREATE
   type                 String
   /// Status: PENDING | COMPLETED | FAILED | ABANDONED
   status               String       @default("PENDING")
@@ -108,6 +185,7 @@ model OperationLog {
   description          String?
   abandonedOperationId String?
   priceEntries         PriceEntry[]
+  suppliers            Supplier[]
 
   @@index([status])
   @@index([type])

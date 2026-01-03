@@ -70,7 +70,6 @@ const DEFAULT_COLUMN_ORDER = [
   'brand',
   'supplierName',
   'supplierPhone',
-  'constructorRef',
   'price',
   'arrivageDate',
 ] as const;
@@ -135,7 +134,7 @@ function parsePrice(value: string): number | null {
 
   // Remove currency symbols and spaces
   let cleaned = value
-    .replace(/[€$£MAD\s]/gi, '')
+    .replace(/[€$£DZD\s]/gi, '')
     .trim();
 
   // Handle European format (1.234,56 -> 1234.56)
@@ -317,7 +316,6 @@ function parseRow(
 
   // Optional fields
   const supplierPhone = getValue('supplierPhone') || undefined;
-  const constructorRef = getValue('constructorRef') || undefined;
   const arrivageDateStr = getValue('arrivageDate');
   const arrivageDate = arrivageDateStr ? parseDate(arrivageDateStr) || undefined : undefined;
 
@@ -327,7 +325,6 @@ function parseRow(
     brand,
     supplierName,
     supplierPhone,
-    constructorRef,
     price,
     arrivageDate,
   };
@@ -347,9 +344,8 @@ function importRowToEntry(row: ImportRow): CreatePriceEntry {
     brand: row.brand,
     supplierName: row.supplierName,
     supplierPhone: row.supplierPhone || null,
-    constructorRef: row.constructorRef || null,
     price: row.price,
-    currency: 'MAD', // Default currency
+    currency: 'DZD', // Default currency
     arrivageDate: row.arrivageDate ? new Date(row.arrivageDate) : null,
     notes: row.notes || null,
   };
@@ -714,19 +710,30 @@ export function getDefaultMapping(columnCount: number): CSVColumnMapping {
 }
 
 /**
- * Get list of existing suppliers for the dropdown.
+ * Get list of existing suppliers from both sources:
+ * 1. Supplier table (new normalized suppliers)
+ * 2. PriceEntry.supplierName (legacy imports)
  * 
- * Uses a direct Prisma query to get unique supplier names.
- * This is more robust than getDistinctValues as it handles schema variations.
+ * Results are merged and deduplicated.
  * 
  * @returns List of unique supplier names
  */
 export async function getExistingSuppliers(): Promise<string[]> {
   try {
-    // Try the standard approach first
-    const suppliers = await getDistinctValues('supplierName');
-    console.log('[ImportService] getExistingSuppliers result:', suppliers);
-    return suppliers;
+    // Get suppliers from new Supplier table via supplier service
+    const { listSuppliers } = await import('./supplier-service');
+    const supplierResult = await listSuppliers({ pageSize: 1000 });
+    const supplierNames = supplierResult.data.map((s: { name: string }) => s.name);
+    
+    // Get suppliers from legacy PriceEntry table
+    const legacySuppliers = await getDistinctValues('supplierName');
+    
+    // Merge and deduplicate
+    const allSuppliers = [...new Set([...supplierNames, ...legacySuppliers])];
+    allSuppliers.sort((a, b) => a.localeCompare(b));
+    
+    console.log('[ImportService] getExistingSuppliers result:', allSuppliers);
+    return allSuppliers;
   } catch (error) {
     console.error('[ImportService] getExistingSuppliers failed:', error);
     return [];
@@ -1113,9 +1120,8 @@ export async function executeCSVImport(
         brand: brand || 'N/A',
         supplierName: supplier.name,
         supplierPhone: supplier.phone || null,
-        constructorRef: null,
         price: price || 0,
-        currency: 'MAD',
+        currency: 'DZD',
         arrivageDate: importDate ? new Date(importDate) : null,
         notes: null,
       });

@@ -349,6 +349,103 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
   });
 
   // ===========================================
+  // SUPPLIER HANDLERS (CORE DOMAIN)
+  // ===========================================
+  // Supplier management for the normalized supplier entity.
+  // See src/main/services/supplier-service.ts for implementation details.
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_CREATE, async (_event, input) => {
+    try {
+      // Import supplier service dynamically to avoid circular dependencies
+      const { createSupplier } = await import('./services/supplier-service');
+      const { CreateSupplierSchema } = await import('../shared/types');
+      
+      // Validate input shape with Zod
+      const validatedInput = CreateSupplierSchema.parse(input);
+      
+      // Create supplier (includes comprehensive business validation)
+      return await createSupplier(validatedInput, 'local');
+    } catch (error) {
+      // Handle Zod validation errors specially
+      if (error instanceof Error && error.name === 'ZodError') {
+        const zodError = error as any;
+        const messages = zodError.errors?.map((e: any) => `${e.path.join('.')}: ${e.message}`).join('; ') || 'Invalid input format';
+        console.error('[IPC] Zod validation error:', messages);
+        return {
+          success: false,
+          errors: [{ field: 'validation', message: messages }],
+        };
+      }
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_GET_LIST, async (_event, params) => {
+    try {
+      const { listSuppliers } = await import('./services/supplier-service');
+      return await listSuppliers(params || {});
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_GET_BY_ID, async (_event, id: string) => {
+    try {
+      if (!id || typeof id !== 'string') {
+        throw new Error('Invalid supplier ID');
+      }
+      const { getSupplierById } = await import('./services/supplier-service');
+      return await getSupplierById(id);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_DELETE, async (_event, id: string) => {
+    try {
+      if (!id || typeof id !== 'string') {
+        throw new Error('Invalid supplier ID');
+      }
+      const { deleteSupplier } = await import('./services/supplier-service');
+      return await deleteSupplier(id);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_VALIDATE, async (_event, input) => {
+    try {
+      const { validateSupplierInput } = await import('./services/supplier-service');
+      const errors = validateSupplierInput(input);
+      return { isValid: errors.length === 0, errors };
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_SEARCH, async (_event, query: string, limit?: number) => {
+    try {
+      const { searchSuppliers } = await import('./services/supplier-service');
+      return await searchSuppliers(query || '', limit || 10);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_GET_PHONES_BY_NAME, async (_event, supplierName: string) => {
+    try {
+      if (!supplierName || typeof supplierName !== 'string') {
+        return [];
+      }
+      const { getSupplierPhonesByName } = await import('./services/supplier-service');
+      return await getSupplierPhonesByName(supplierName);
+    } catch (error) {
+      console.error('Error getting supplier phones:', error);
+      return [];
+    }
+  });
+
+  // ===========================================
   // EXPORT HANDLERS
   // ===========================================
 

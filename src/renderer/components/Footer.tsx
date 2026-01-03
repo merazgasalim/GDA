@@ -9,15 +9,15 @@ import { useAppStore } from '../store';
 
 export const Footer: React.FC = () => {
   const totalEntries = useAppStore((state) => state.totalEntries);
-  const currentPage = useAppStore((state) => state.currentPage);
+  const currentPageNum = useAppStore((state) => state.currentPageNum);
   const pageSize = useAppStore((state) => state.pageSize);
   const totalPages = useAppStore((state) => state.totalPages);
   const setPage = useAppStore((state) => state.setPage);
   const setPageSize = useAppStore((state) => state.setPageSize);
   const stats = useAppStore((state) => state.stats);
 
-  const startEntry = (currentPage - 1) * pageSize + 1;
-  const endEntry = Math.min(currentPage * pageSize, totalEntries);
+  const startEntry = (currentPageNum - 1) * pageSize + 1;
+  const endEntry = Math.min(currentPageNum * pageSize, totalEntries);
 
   const pageSizeOptions = [25, 50, 100, 200];
 
@@ -81,7 +81,7 @@ export const Footer: React.FC = () => {
             {/* First Page */}
             <button
               onClick={() => setPage(1)}
-              disabled={currentPage === 1}
+              disabled={currentPageNum === 1}
               className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Première page"
             >
@@ -92,8 +92,8 @@ export const Footer: React.FC = () => {
 
             {/* Previous Page */}
             <button
-              onClick={() => setPage(currentPage - 1)}
-              disabled={currentPage === 1}
+              onClick={() => setPage(currentPageNum - 1)}
+              disabled={currentPageNum === 1}
               className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Page précédente"
             >
@@ -108,7 +108,7 @@ export const Footer: React.FC = () => {
                 type="number"
                 min={1}
                 max={totalPages || 1}
-                value={currentPage}
+                value={currentPageNum}
                 onChange={(e) => {
                   const page = parseInt(e.target.value);
                   if (page >= 1 && page <= totalPages) {
@@ -122,8 +122,8 @@ export const Footer: React.FC = () => {
 
             {/* Next Page */}
             <button
-              onClick={() => setPage(currentPage + 1)}
-              disabled={currentPage >= totalPages}
+              onClick={() => setPage(currentPageNum + 1)}
+              disabled={currentPageNum >= totalPages}
               className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Page suivante"
             >
@@ -135,7 +135,7 @@ export const Footer: React.FC = () => {
             {/* Last Page */}
             <button
               onClick={() => setPage(totalPages)}
-              disabled={currentPage >= totalPages}
+              disabled={currentPageNum >= totalPages}
               className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Dernière page"
             >
