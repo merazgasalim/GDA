@@ -127,17 +127,12 @@ function parseLicenseKey(licenseKey: string): ParsedLicense | null {
  */
 function verifySignature(payloadBase64: string, signatureBase64: string): boolean {
   try {
-    console.log('Verifying signature...');
-    console.log('Payload (first 50 chars):', payloadBase64.substring(0, 50));
-    console.log('Signature (first 50 chars):', signatureBase64.substring(0, 50));
-    
     const verifier = crypto.createVerify('SHA256');
     verifier.update(payloadBase64);
     verifier.end();
 
     // Verify using base64 signature directly
     const result = verifier.verify(RSA_PUBLIC_KEY, signatureBase64, 'base64');
-    console.log('Verification result:', result);
     return result;
   } catch (error) {
     console.error('Signature verification error:', error);

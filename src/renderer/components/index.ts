@@ -15,3 +15,8 @@ export { AddSupplierModal } from './AddSupplierModal';
 export { EditSupplierModal } from './EditSupplierModal';
 export { SuppliersPage } from './SuppliersPage';
 export { SupplierInfoModal } from './SupplierInfoModal';
+
+// Product Compatibility (Renvoi / Équivalence)
+export { CompatibleReferencesSection } from './CompatibleReferencesSection';
+export { AddCompatibilityModal } from './AddCompatibilityModal';
+export { ProductDetailModal } from './ProductDetailModal';

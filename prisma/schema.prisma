@@ -155,6 +155,79 @@ model SupplierContact {
 }
 
 // ===========================================
+// PRODUCT COMPATIBILITY (RENVOI / ÉQUIVALENCE)
+// ===========================================
+// This domain feature allows tracking compatible/interchangeable product references.
+// 
+// DESIGN DECISIONS:
+// 1. Compatibility is EXPLICIT - never inferred automatically
+// 2. Compatibility is DIRECTIONAL - A → B does NOT imply B → A
+// 3. Compatibility does NOT merge stock, pricing, or sync changes
+// 4. Every relation is auditable via operationId
+// 5. Soft-delete via isActive flag preserves audit trail
+//
+// BUSINESS RULES:
+// - source_product_id ≠ target_product_id (no self-references)
+// - Unique constraint on (source, target, relationType) prevents duplicates
+// - Relation removal is soft-delete for auditability
+//
+// EDGE CASES HANDLED:
+// - Circular references (A → B → A) are allowed if explicitly created
+// - Multiple relation types between same products are allowed
+// - Same reference from different suppliers are distinct products
+
+/// Represents a compatibility relationship between two product references.
+/// 
+/// INVARIANTS:
+/// - sourceProductId != targetProductId (enforced at service layer)
+/// - Unique combination of (sourceProductId, targetProductId, relationType)
+/// - isActive=false indicates soft-deleted (for audit trail)
+model ProductCompatibility {
+  id               String        @id @default(uuid())
+  
+  /// The originating product reference (source of the compatibility link)
+  sourceProductId  String
+  
+  /// The target product reference that is compatible with source
+  targetProductId  String
+  
+  /// Type of compatibility relationship
+  /// EQUIVALENT: Functionally identical, interchangeable
+  /// SUBSTITUTE: Can be used as replacement, may have minor differences
+  /// OEM_ALTERNATIVE: Alternative from different manufacturer, same specs
+  relationType     String        // 'EQUIVALENT' | 'SUBSTITUTE' | 'OEM_ALTERNATIVE'
+  
+  /// Optional note explaining the compatibility (e.g., "Same mounting, different brand")
+  note             String?
+  
+  /// Soft-delete flag - false means relation was removed but preserved for audit
+  isActive         Boolean       @default(true)
+  
+  /// Audit fields
+  createdAt        DateTime      @default(now())
+  createdBy        String        @default("local")
+  
+  /// When the relation was deactivated (soft-deleted)
+  deactivatedAt    DateTime?
+  deactivatedBy    String?
+  
+  /// Link to the operation that created this relation
+  operationId      String?
+  operation        OperationLog? @relation(fields: [operationId], references: [id])
+
+  // Indexes for efficient querying
+  @@index([sourceProductId])
+  @@index([targetProductId])
+  @@index([relationType])
+  @@index([isActive])
+  @@index([operationId])
+  @@index([sourceProductId, isActive])
+  @@index([targetProductId, isActive])
+  // Unique constraint: no duplicate relations of same type between same products
+  @@unique([sourceProductId, targetProductId, relationType])
+}
+
+// ===========================================
 // OPERATIONS LOG (AUDIT TRAIL)
 // ===========================================
 
@@ -171,7 +244,7 @@ model SupplierContact {
 /// may be updated (PENDING->COMPLETED, COMPLETED->ABANDONED).
 model OperationLog {
   id                   String       @id @default(uuid())
-  /// Operation type: IMPORT | MANUAL_ADD | BULK_EDIT | BULK_DELETE | SYSTEM_MIGRATE | SUPPLIER_CREATE
+  /// Operation type: IMPORT | MANUAL_ADD | BULK_EDIT | BULK_DELETE | SYSTEM_MIGRATE | SUPPLIER_CREATE | COMPATIBILITY_ADD | COMPATIBILITY_REMOVE
   type                 String
   /// Status: PENDING | COMPLETED | FAILED | ABANDONED
   status               String       @default("PENDING")
@@ -186,6 +259,7 @@ model OperationLog {
   abandonedOperationId String?
   priceEntries         PriceEntry[]
   suppliers            Supplier[]
+  compatibilities      ProductCompatibility[]
 
   @@index([status])
   @@index([type])

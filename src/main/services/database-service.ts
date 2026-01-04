@@ -30,6 +30,7 @@ import { DatabaseStats } from '../../shared/ipc-api';
 import { deriveEncryptionKey } from './license-service';
 import { setOperationServicePrisma } from './operation-service';
 import { setSupplierServicePrisma } from './supplier-service';
+import { setCompatibilityServicePrisma } from './compatibility-service';
 
 // ===========================================
 // DATABASE CONFIGURATION
@@ -100,6 +101,9 @@ export async function initializeDatabase(): Promise<{
     
     // Initialize supplier service with the Prisma client
     setSupplierServicePrisma(prisma);
+    
+    // Initialize compatibility service with the Prisma client
+    setCompatibilityServicePrisma(prisma);
 
     // For SQLCipher, we would set the key here:
     // await prisma.$executeRawUnsafe(`PRAGMA key = '${encryptionKey}'`);
@@ -107,7 +111,6 @@ export async function initializeDatabase(): Promise<{
     // For this demo, we'll use standard SQLite
 
     isInitialized = true;
-    console.log('Database initialized successfully at:', dbPath);
 
     return { success: true };
   } catch (error) {
@@ -198,6 +201,19 @@ function buildWhereClause(
           (condition as any)[column] = value;
           break;
         case 'contains':
+          // Multi-word search for reference and designation columns
+          if (column === 'reference' || column === 'designation') {
+            const searchWords = value.trim().split(/\s+/).filter(word => word.length > 0);
+            if (searchWords.length > 1) {
+              // Multiple words: ALL must be found in the same column
+              const wordConditions = searchWords.map(word => ({
+                [column]: { contains: word }
+              }));
+              conditions.push({ AND: wordConditions });
+              continue;
+            }
+          }
+          // Single word or other columns: normal contains search
           (condition as any)[column] = { contains: value };
           break;
         case 'startsWith':
@@ -221,18 +237,26 @@ function buildWhereClause(
   }
 
   // Apply global search across multiple columns
+  // Split search into words and ensure ALL words are found (in any field)
   if (globalSearch && globalSearch.trim()) {
-    const searchTerm = globalSearch.trim();
-    conditions.push({
-      OR: [
-        { reference: { contains: searchTerm } },
-        { designation: { contains: searchTerm } },
-        { brand: { contains: searchTerm } },
-        { supplierName: { contains: searchTerm } },
-        { supplierPhone: { contains: searchTerm } },
-        { notes: { contains: searchTerm } },
-      ],
-    });
+    const searchWords = globalSearch.trim().split(/\s+/).filter(word => word.length > 0);
+    
+    if (searchWords.length > 0) {
+      // Each word must be found in at least one searchable field
+      const wordConditions = searchWords.map(word => ({
+        OR: [
+          { reference: { contains: word } },
+          { designation: { contains: word } },
+          { brand: { contains: word } },
+          { supplierName: { contains: word } },
+          { supplierPhone: { contains: word } },
+          { notes: { contains: word } },
+        ],
+      }));
+      
+      // All word conditions must be satisfied
+      conditions.push({ AND: wordConditions });
+    }
   }
 
   if (conditions.length === 0) {
@@ -384,8 +408,6 @@ export async function findDuplicateReferences(
     return new Map();
   }
 
-  console.log('[DatabaseService] findDuplicateReferences called with', referenceSupplierPairs.length, 'pairs');
-
   // Normalize and deduplicate the pairs we're looking for
   const normalizedPairs = new Set<string>();
   const pairsToQuery: Array<{ reference: string; supplierName: string }> = [];
@@ -411,8 +433,6 @@ export async function findDuplicateReferences(
   const uniqueReferences: string[] = [...new Set(referenceSupplierPairs.map(p => p.reference.trim()))];
   const uniqueSuppliers: string[] = [...new Set(referenceSupplierPairs.map(p => p.supplierName.trim()))];
   
-  console.log('[DatabaseService] Querying for references:', uniqueReferences.slice(0, 5), '... and suppliers:', uniqueSuppliers);
-  
   // Query entries that match any of our references and suppliers
   // Then filter for exact case-insensitive matches in JS
   const existingEntries = await db.priceEntry.findMany({
@@ -429,8 +449,6 @@ export async function findDuplicateReferences(
       entryDate: true,
     },
   });
-
-  console.log('[DatabaseService] Found', existingEntries.length, 'matching entries in DB');
 
   // Build result map with normalized keys - filter to only our target pairs
   const resultMap = new Map<string, { id: string; price: number; entryDate: Date }>();
@@ -452,7 +470,6 @@ export async function findDuplicateReferences(
     }
   }
 
-  console.log('[DatabaseService] Returning', resultMap.size, 'duplicates found');
   return resultMap;
 }
 

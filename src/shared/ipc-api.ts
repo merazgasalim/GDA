@@ -34,6 +34,15 @@ import type {
   SupplierListResult,
   SupplierQueryParams,
   SupplierValidationError,
+  // Compatibility types
+  CreateCompatibility,
+  CreateCompatibilityResult,
+  RemoveCompatibilityResult,
+  CompatibilityWithDetails,
+  CompatibilityQueryParams,
+  CompatibilitySearchResult,
+  CompatibilitySummary,
+  CompatibilityRelationType,
 } from './types';
 
 // ===========================================
@@ -240,6 +249,90 @@ export interface SupplierPhoneInfo {
 }
 
 // ===========================================
+// PRODUCT COMPATIBILITY API (RENVOI / ÉQUIVALENCE)
+// ===========================================
+/**
+ * Compatibility API for managing product reference relationships.
+ * 
+ * This is a CORE business feature for auto spare parts:
+ * - Explicit, searchable, auditable compatibility tracking
+ * - Directional relations (A → B does NOT imply B → A)
+ * - Does NOT merge stock, pricing, or auto-sync data
+ * 
+ * See src/main/services/compatibility-service.ts for implementation.
+ */
+export interface CompatibilityApi {
+  /**
+   * Get all compatibility relations for a product.
+   * Returns outgoing relations by default, can include incoming.
+   * 
+   * @param params - Query parameters including productId
+   */
+  getForProduct: (params: CompatibilityQueryParams) => Promise<CompatibilityWithDetails[]>;
+  
+  /**
+   * Add a new compatibility relation between two products.
+   * Creates an OperationLog entry for audit trail.
+   * 
+   * @param input - Compatibility creation input
+   */
+  add: (input: CreateCompatibility) => Promise<CreateCompatibilityResult>;
+  
+  /**
+   * Remove a compatibility relation (soft-delete).
+   * Preserves audit trail via isActive flag.
+   * 
+   * @param compatibilityId - ID of the relation to remove
+   * @param reason - Optional reason for removal (for audit)
+   */
+  remove: (compatibilityId: string, reason?: string) => Promise<RemoveCompatibilityResult>;
+  
+  /**
+   * Search for products that can be added as compatible references.
+   * Searches by reference, designation, or brand.
+   * Indicates if products already have a relation with source.
+   * 
+   * @param sourceProductId - Source product to find compatibles for
+   * @param query - Search query string
+   * @param limit - Maximum results (default: 20)
+   */
+  searchProducts: (
+    sourceProductId: string,
+    query: string,
+    limit?: number
+  ) => Promise<CompatibilitySearchResult[]>;
+  
+  /**
+   * Get compatibility summary statistics for a product.
+   * 
+   * @param productId - Product to get summary for
+   */
+  getSummary: (productId: string) => Promise<CompatibilitySummary>;
+  
+  /**
+   * Check if a specific compatibility relation exists.
+   * 
+   * @param sourceProductId - Source product ID
+   * @param targetProductId - Target product ID  
+   * @param relationType - Type of relation (optional)
+   */
+  checkExists: (
+    sourceProductId: string,
+    targetProductId: string,
+    relationType?: CompatibilityRelationType
+  ) => Promise<boolean>;
+  
+  /**
+   * Get compatibility counts for multiple products in bulk.
+   * Returns a map of productId to total count of compatibilities.
+   * 
+   * @param productIds - Array of product IDs to get counts for
+   * @returns Object map of productId to count
+   */
+  getBulkCounts: (productIds: string[]) => Promise<Record<string, number>>;
+}
+
+// ===========================================
 // EXPORT API
 // ===========================================
 
@@ -334,6 +427,7 @@ export interface ElectronApi {
   dialog: DialogApi;
   operations: OperationsApi;
   supplier: SupplierApi;
+  compatibility: CompatibilityApi;
 }
 
 // Declare global window type extension

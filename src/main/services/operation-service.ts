@@ -137,7 +137,6 @@ export async function createOperation(options: CreateOperationOptions): Promise<
     },
   });
   
-  console.log(`[OperationService] Created operation ${operationId} (type=${options.type}, status=PENDING)`);
   return operationId;
 }
 
@@ -181,8 +180,6 @@ export async function completeOperation(options: CompleteOperationOptions): Prom
     where: { id: options.operationId },
     data: updateData,
   });
-  
-  console.log(`[OperationService] Completed operation ${options.operationId} (rowCount=${options.rowCount})`);
 }
 
 /**
@@ -216,8 +213,6 @@ export async function failOperation(operationId: string, errorMessage: string): 
       }),
     },
   });
-  
-  console.log(`[OperationService] Failed operation ${operationId}: ${errorMessage}`);
 }
 
 // ===========================================
@@ -245,8 +240,6 @@ export async function failOperation(operationId: string, errorMessage: string): 
 export async function abandonOperation(options: AbandonOperationOptions): Promise<AbandonOperationResult> {
   const db = getPrisma();
   const { operationId, reason, abandonedBy = 'local' } = options;
-  
-  console.log(`[OperationService] Attempting to abandon operation ${operationId}`);
   
   // ===========================================
   // PERMISSION CHECK
@@ -280,7 +273,6 @@ export async function abandonOperation(options: AbandonOperationOptions): Promis
   
   // IDEMPOTENT: If already abandoned, return success
   if (operation.status === 'ABANDONED') {
-    console.log(`[OperationService] Operation ${operationId} already abandoned, returning success`);
     return {
       success: true,
       operationId,
@@ -357,8 +349,6 @@ export async function abandonOperation(options: AbandonOperationOptions): Promis
         abandonEventId,
       };
     });
-    
-    console.log(`[OperationService] Successfully abandoned operation ${operationId}, affected ${result.affectedRowCount} rows`);
     
     return {
       success: true,
@@ -552,7 +542,6 @@ export async function finalizePendingOperation(operationId: string): Promise<boo
     },
   });
   
-  console.log(`[OperationService] Finalized pending operation ${operationId} with ${actualCount} rows`);
   return true;
 }
 
@@ -610,8 +599,6 @@ export async function abandonPendingOperation(operationId: string, reason?: stri
       
       return updateResult.count;
     });
-    
-    console.log(`[OperationService] Abandoned pending operation ${operationId}, affected ${result} rows`);
     
     return {
       success: true,

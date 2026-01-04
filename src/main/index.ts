@@ -105,9 +105,6 @@ async function createWindow(): Promise<void> {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-
-  // Log ready
-  console.log('Main window created');
 }
 
 // ===========================================
@@ -116,11 +113,8 @@ async function createWindow(): Promise<void> {
 
 // This method will be called when Electron has finished initialization
 app.whenReady().then(async () => {
-  console.log('App ready - initializing...');
-
   // Validate license first
   const licenseStatus = await validateLicense();
-  console.log('License status:', licenseStatus.isValid ? 'Valid' : 'Invalid/Missing');
 
   // Initialize database
   const dbResult = await initializeDatabase();
@@ -149,7 +143,6 @@ app.on('window-all-closed', () => {
 
 // Cleanup before quit
 app.on('before-quit', async () => {
-  console.log('App quitting - cleaning up...');
   unregisterIpcHandlers();
   await closeDatabase();
 });

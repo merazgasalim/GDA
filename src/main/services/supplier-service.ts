@@ -413,8 +413,6 @@ export async function createSupplier(
       },
     });
     
-    console.log(`[SupplierService] Created supplier ${supplier.id} (${supplier.name})`);
-    
     // Step 6: Return result
     return {
       success: true,
@@ -669,6 +667,5 @@ export async function handlePrimaryPhoneDeletion(
       where: { id: otherPhone.id },
       data: { isPrimary: true },
     });
-    console.log(`[SupplierService] Auto-assigned primary phone to ${otherPhone.id}`);
   }
 }

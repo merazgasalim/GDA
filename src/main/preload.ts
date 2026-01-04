@@ -110,6 +110,34 @@ const electronApi: ElectronApi = {
   },
 
   // ===========================================
+  // PRODUCT COMPATIBILITY API (RENVOI / ÉQUIVALENCE)
+  // ===========================================
+  // Compatible References feature for auto spare parts.
+  // Explicit, searchable, auditable compatibility tracking.
+  compatibility: {
+    getForProduct: (params: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_GET_FOR_PRODUCT, params),
+    
+    add: (input: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_ADD, input),
+    
+    remove: (compatibilityId: string, reason?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_REMOVE, compatibilityId, reason),
+    
+    searchProducts: (sourceProductId: string, query: string, limit?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_SEARCH_PRODUCTS, sourceProductId, query, limit),
+    
+    getSummary: (productId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_GET_SUMMARY, productId),
+    
+    checkExists: (sourceProductId: string, targetProductId: string, relationType?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_CHECK_EXISTS, sourceProductId, targetProductId, relationType),
+    
+    getBulkCounts: (productIds: string[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_GET_BULK_COUNTS, productIds),
+  },
+
+  // ===========================================
   // EXPORT API
   // ===========================================
   export: {
@@ -231,5 +259,3 @@ const electronApi: ElectronApi = {
 // - Modify the exposed API
 // - Access IPC directly
 contextBridge.exposeInMainWorld('electronApi', electronApi);
-
-console.log('Preload script loaded - electronApi exposed');

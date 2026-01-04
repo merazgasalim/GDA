@@ -78,10 +78,10 @@ export const Header: React.FC = () => {
               placeholder="Rechercher (référence, désignation, marque, fournisseur...)"
               value={localSearch}
               onChange={handleSearchChange}
-              className="input pl-10 pr-10"
+              className="input pl-11 pr-10"
             />
             <svg
-              className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400"
+              className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"

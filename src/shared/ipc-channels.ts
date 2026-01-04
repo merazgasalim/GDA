@@ -65,6 +65,19 @@ export const IPC_CHANNELS = {
   SUPPLIER_GET_PHONES_BY_NAME: 'supplier:get-phones-by-name',
 
   // ===========================================
+  // PRODUCT COMPATIBILITY (RENVOI / ÉQUIVALENCE)
+  // ===========================================
+  // Compatible References feature for auto spare parts.
+  // See src/main/services/compatibility-service.ts for implementation.
+  COMPATIBILITY_GET_FOR_PRODUCT: 'compatibility:get-for-product',
+  COMPATIBILITY_ADD: 'compatibility:add',
+  COMPATIBILITY_REMOVE: 'compatibility:remove',
+  COMPATIBILITY_SEARCH_PRODUCTS: 'compatibility:search-products',
+  COMPATIBILITY_GET_SUMMARY: 'compatibility:get-summary',
+  COMPATIBILITY_CHECK_EXISTS: 'compatibility:check-exists',
+  COMPATIBILITY_GET_BULK_COUNTS: 'compatibility:get-bulk-counts',
+
+  // ===========================================
   // EXPORT OPERATIONS (LICENSE REQUIRED)
   // ===========================================
   EXPORT_CSV: 'export:csv',

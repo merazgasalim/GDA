@@ -386,7 +386,6 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
   refreshSuppliers: async () => {
     // Currently a placeholder - can be extended to manage a suppliers list
     // For now, this is called after supplier creation to refresh any dependent data
-    console.log('[AppStore] Refreshing suppliers...');
     // Optionally refresh stats which includes supplier count
     try {
       const stats = await window.electronApi.database.getStats();

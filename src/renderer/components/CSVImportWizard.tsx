@@ -200,7 +200,6 @@ export const CSVImportWizard: React.FC = () => {
   const loadSuppliers = async () => {
     try {
       const suppliers = await window.electronApi.import.csvGetSuppliers();
-      console.log('[CSVImportWizard] Loaded suppliers:', suppliers);
       setState(prev => ({ ...prev, existingSuppliers: suppliers || [] }));
     } catch (error) {
       console.error('[CSVImportWizard] Failed to load suppliers:', error);

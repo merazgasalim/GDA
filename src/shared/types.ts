@@ -18,12 +18,14 @@ import { z } from 'zod';
  * Each type is a meaningful business action, not a raw SQL operation.
  */
 export const OperationTypeSchema = z.enum([
-  'IMPORT',           // Bulk import from clipboard/file
-  'MANUAL_ADD',       // Single entry manual creation  
-  'BULK_EDIT',        // Bulk modification of existing entries
-  'BULK_DELETE',      // Soft-delete of multiple entries
-  'SYSTEM_MIGRATE',   // System-initiated data migration
-  'SUPPLIER_CREATE',  // Supplier entity creation
+  'IMPORT',              // Bulk import from clipboard/file
+  'MANUAL_ADD',          // Single entry manual creation  
+  'BULK_EDIT',           // Bulk modification of existing entries
+  'BULK_DELETE',         // Soft-delete of multiple entries
+  'SYSTEM_MIGRATE',      // System-initiated data migration
+  'SUPPLIER_CREATE',     // Supplier entity creation
+  'COMPATIBILITY_ADD',   // Add product compatibility relation
+  'COMPATIBILITY_REMOVE',// Remove (soft-delete) product compatibility relation
 ]);
 export type OperationType = z.infer<typeof OperationTypeSchema>;
 
@@ -702,3 +704,174 @@ export const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'price', header: 'Prix', accessorKey: 'price', visible: true, sortable: true, filterable: true, width: 100 },
   { id: 'entryDate', header: 'Date', accessorKey: 'entryDate', visible: true, sortable: true, filterable: true },
 ];
+
+// ===========================================
+// PRODUCT COMPATIBILITY TYPES (RENVOI / ÉQUIVALENCE)
+// ===========================================
+// Compatible References feature for auto spare parts.
+// 
+// DESIGN PRINCIPLES:
+// 1. Compatibility is EXPLICIT - never inferred heuristically
+// 2. Compatibility is DIRECTIONAL - A → B does NOT imply B → A
+// 3. Compatibility does NOT merge stock, pricing, or auto-sync
+// 4. Every relation is auditable with full provenance
+// 5. Soft-delete via isActive flag preserves audit trail
+
+/**
+ * Types of compatibility relationships between products.
+ * 
+ * EQUIVALENT: Functionally identical, fully interchangeable
+ *   Example: Same part from OEM vs aftermarket
+ * 
+ * SUBSTITUTE: Can be used as replacement, may have minor differences
+ *   Example: Different capacity filter that fits same vehicle
+ * 
+ * OEM_ALTERNATIVE: Alternative from different manufacturer, same specs
+ *   Example: Bosch vs Denso spark plug for same engine
+ */
+export const CompatibilityRelationTypeSchema = z.enum([
+  'EQUIVALENT',
+  'SUBSTITUTE', 
+  'OEM_ALTERNATIVE',
+]);
+export type CompatibilityRelationType = z.infer<typeof CompatibilityRelationTypeSchema>;
+
+/**
+ * Human-readable labels for compatibility relation types (French).
+ */
+export const COMPATIBILITY_RELATION_LABELS: Record<CompatibilityRelationType, string> = {
+  EQUIVALENT: 'Équivalent',
+  SUBSTITUTE: 'Substitut',
+  OEM_ALTERNATIVE: 'Alternative OEM',
+};
+
+/**
+ * Descriptions for each compatibility relation type.
+ */
+export const COMPATIBILITY_RELATION_DESCRIPTIONS: Record<CompatibilityRelationType, string> = {
+  EQUIVALENT: 'Pièce identique, interchangeable à 100%',
+  SUBSTITUTE: 'Peut remplacer avec de légères différences',
+  OEM_ALTERNATIVE: 'Même spécifications, fabricant différent',
+};
+
+/**
+ * Full ProductCompatibility entity as returned from the database.
+ */
+export const ProductCompatibilitySchema = z.object({
+  id: z.string().uuid(),
+  sourceProductId: z.string(),
+  targetProductId: z.string(),
+  relationType: CompatibilityRelationTypeSchema,
+  note: z.string().nullable(),
+  isActive: z.boolean().default(true),
+  createdAt: z.date(),
+  createdBy: z.string(),
+  deactivatedAt: z.date().nullable(),
+  deactivatedBy: z.string().nullable(),
+  operationId: z.string().nullable(),
+});
+export type ProductCompatibility = z.infer<typeof ProductCompatibilitySchema>;
+
+/**
+ * Input for creating a new compatibility relation.
+ * 
+ * VALIDATION RULES (enforced at service layer):
+ * - sourceProductId and targetProductId must be different
+ * - Both products must exist in the database
+ * - No duplicate relations (same source, target, and type)
+ */
+export const CreateCompatibilitySchema = z.object({
+  sourceProductId: z.string().min(1, 'Source product ID is required'),
+  targetProductId: z.string().min(1, 'Target product ID is required'),
+  relationType: CompatibilityRelationTypeSchema,
+  note: z.string().optional().nullable(),
+});
+export type CreateCompatibility = z.infer<typeof CreateCompatibilitySchema>;
+
+/**
+ * Result of compatibility creation operation.
+ */
+export interface CreateCompatibilityResult {
+  success: boolean;
+  compatibility?: ProductCompatibility;
+  operationId?: string;
+  error?: string;
+}
+
+/**
+ * Result of compatibility removal operation (soft-delete).
+ */
+export interface RemoveCompatibilityResult {
+  success: boolean;
+  operationId?: string;
+  error?: string;
+}
+
+/**
+ * Extended compatibility info with resolved product details for display.
+ * Used in the UI to show full reference information.
+ */
+export interface CompatibilityWithDetails {
+  id: string;
+  relationType: CompatibilityRelationType;
+  note: string | null;
+  createdAt: Date;
+  createdBy: string;
+  /** The target product's reference code */
+  reference: string;
+  /** The target product's designation/description */
+  designation: string;
+  /** The target product's brand */
+  brand: string;
+  /** The target product's supplier name */
+  supplierName: string;
+  /** The target product's current price (latest active entry) */
+  price: number | null;
+  /** The source product ID (for bi-directional display) */
+  sourceProductId: string;
+  /** The target product ID */
+  targetProductId: string;
+}
+
+/**
+ * Query parameters for listing compatibilities.
+ */
+export interface CompatibilityQueryParams {
+  productId: string;
+  /** Include incoming relations (where product is target) */
+  includeIncoming?: boolean;
+  /** Filter by relation type */
+  relationType?: CompatibilityRelationType;
+  /** Include inactive (soft-deleted) relations */
+  includeInactive?: boolean;
+}
+
+/**
+ * Result of compatibility search - products that can be added as compatible.
+ */
+export interface CompatibilitySearchResult {
+  /** Product entry ID */
+  id: string;
+  reference: string;
+  designation: string;
+  brand: string;
+  supplierName: string;
+  price: number;
+  /** Whether this product already has a compatibility relation with the source */
+  hasExistingRelation: boolean;
+  /** If hasExistingRelation, what type */
+  existingRelationType?: CompatibilityRelationType;
+}
+
+/**
+ * Summary statistics for a product's compatibility relations.
+ */
+export interface CompatibilitySummary {
+  /** Total outgoing relations (this product → others) */
+  outgoingCount: number;
+  /** Total incoming relations (others → this product) */
+  incomingCount: number;
+  /** Count by relation type */
+  byType: Record<CompatibilityRelationType, number>;
+}
+

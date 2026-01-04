@@ -544,7 +544,6 @@ async function readXlsFileAsCSV(filePath: string): Promise<string> {
       throw new Error('Le fichier Excel est vide ou ne contient pas de données lisibles');
     }
     
-    console.log('[ImportService] Extracted data from .xls file using SheetJS');
     return csvContent;
   } catch (error) {
     console.error('[ImportService] XLS read error:', error);
@@ -588,8 +587,6 @@ async function readXlsxFileAsCSV(filePath: string): Promise<string> {
     throw new Error('Le fichier Excel ne contient aucune feuille de calcul lisible. Essayez de ré-enregistrer le fichier au format .xlsx');
   }
 
-  console.log('[ImportService] Reading worksheet:', worksheet.name, 'Row count:', worksheet.rowCount);
-
   const rows: string[] = [];
   let maxColCount = 0;
 
@@ -604,8 +601,6 @@ async function readXlsxFileAsCSV(filePath: string): Promise<string> {
   if (maxColCount === 0) {
     maxColCount = worksheet.columnCount || 10; // fallback to 10 columns
   }
-
-  console.log('[ImportService] Max column count:', maxColCount);
 
   // Second pass: extract data
   worksheet.eachRow((row, _rowNumber) => {
@@ -649,8 +644,6 @@ async function readXlsxFileAsCSV(filePath: string): Promise<string> {
   if (rows.length === 0) {
     throw new Error('Le fichier Excel est vide ou ne contient pas de données lisibles');
   }
-
-  console.log('[ImportService] Extracted', rows.length, 'rows from Excel');
 
   return rows.join('\n');
 }
@@ -734,7 +727,6 @@ export async function getExistingSuppliers(): Promise<string[]> {
     const allSuppliers = [...new Set([...supplierNames, ...legacySuppliers])];
     allSuppliers.sort((a, b) => a.localeCompare(b));
     
-    console.log('[ImportService] getExistingSuppliers result:', allSuppliers);
     return allSuppliers;
   } catch (error) {
     console.error('[ImportService] getExistingSuppliers failed:', error);
@@ -778,8 +770,6 @@ export async function analyzeForDuplicates(
   mapping: CSVColumnMapping,
   supplierName: string
 ): Promise<DuplicateAnalysisResult> {
-  console.log('[ImportService] Starting duplicate analysis for', parsedData.totalRows, 'rows');
-
   // Find the reference column index
   const referenceColIndex = Object.entries(mapping).find(
     ([, field]) => field === 'reference'
@@ -857,8 +847,6 @@ export async function analyzeForDuplicates(
     supplierName: supplierName.trim(),  // Use original casing
   }));
 
-  console.log('[ImportService] Checking', pairsToCheck.length, 'pairs against database for supplier:', supplierName);
-
   const existingEntriesMap = await findDuplicateReferences(pairsToCheck);
 
   // Phase 4: Categorize as NEW or DUPLICATE
@@ -899,8 +887,6 @@ export async function analyzeForDuplicates(
     // User must choose a strategy if there are any duplicates
     requiresStrategySelection: duplicateRows.length > 0,
   };
-
-  console.log('[ImportService] Duplicate analysis complete:', result.summary);
 
   return result;
 }

@@ -48,7 +48,6 @@ export const App: React.FC = () => {
       try {
         const incompleteOps = await window.electronApi.operations.getIncomplete();
         if (incompleteOps.length > 0) {
-          console.log(`[App] Found ${incompleteOps.length} incomplete operations, prompting user`);
           setShowIncompleteOperations(true);
         } else {
           setIncompleteOperationsChecked(true);

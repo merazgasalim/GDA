@@ -5,12 +5,17 @@
  * 
  * NEVER USE IN PRODUCTION - Keep private key secure on your licensing server.
  * 
- * Usage: npx ts-node scripts/generate-license.ts
- * npx tsx scripts/generate-license.ts
+ * Usage: 
+ *   npx tsx scripts/generate-license.ts
+ *   npx tsx scripts/generate-license.ts <machineId>
+ * 
+ * If machineId is provided, generates a machine-bound license.
+ * Otherwise, generates a universal license (works on any machine).
  */
 
 import crypto from 'crypto';
 import { LicensePayload } from '../src/shared/types';
+import { getDisplayMachineId } from '../src/main/services/machine-fingerprint';
 
 // ===========================================
 // TEST RSA KEY PAIR
@@ -77,68 +82,89 @@ function generateLicense(
 // GENERATE SAMPLE LICENSES
 // ===========================================
 
-// Full license - 1 year
-const fullLicense = generateLicense(
-  {
-    customerId: 'cust_demo_001',
-    customerName: 'Demo Company',
-    licenseType: 'full',
-    expirationDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-    featureFlags: {
-      canExport: true,
-      canBackup: true,
-      canImport: true,
+async function main() {
+  // Get machine ID from command line or current machine
+  const providedMachineId = process.argv[2];
+  const currentMachineId = await getDisplayMachineId();
+  
+  // If machine ID provided via CLI, use it; otherwise, generate universal licenses
+  const targetMachineId = providedMachineId || undefined;
+  const isMachineBound = !!targetMachineId;
+
+  console.log('='.repeat(60));
+  console.log('GESTION DES ARRIVAGES - Test License Keys');
+  console.log('='.repeat(60));
+  console.log('\n⚠️  DEVELOPMENT USE ONLY - DO NOT USE IN PRODUCTION\n');
+  
+  console.log('📟 Current Machine ID:', currentMachineId);
+  if (isMachineBound) {
+    console.log('🔒 Generating MACHINE-BOUND licenses for:', targetMachineId);
+  } else {
+    console.log('🌍 Generating UNIVERSAL licenses (works on any machine)');
+    console.log('   To generate machine-bound license, run: npx tsx scripts/generate-license.ts <machineId>');
+  }
+  console.log('');
+
+  // Full license - 1 year
+  const fullLicense = generateLicense(
+    {
+      customerId: 'cust_demo_001',
+      customerName: 'Demo Company',
+      licenseType: 'full',
+      expirationDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      featureFlags: {
+        canExport: true,
+        canBackup: true,
+        canImport: true,
+      },
+      machineId: targetMachineId,
     },
-  },
-  TEST_PRIVATE_KEY
-);
+    TEST_PRIVATE_KEY
+  );
 
-// Trial license - 30 days
-const trialLicense = generateLicense(
-  {
-    customerId: 'cust_trial_001',
-    customerName: 'Trial User',
-    licenseType: 'trial',
-    expirationDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    featureFlags: {
-      canExport: true,
-      canBackup: false,
-      canImport: true,
-      maxEntries: 1000,
+  // Trial license - 30 days
+  const trialLicense = generateLicense(
+    {
+      customerId: 'cust_trial_001',
+      customerName: 'Trial User',
+      licenseType: 'trial',
+      expirationDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      featureFlags: {
+        canExport: true,
+        canBackup: false,
+        canImport: true,
+        maxEntries: 1000,
+      },
+      machineId: targetMachineId,
     },
-  },
-  TEST_PRIVATE_KEY
-);
+    TEST_PRIVATE_KEY
+  );
 
-// Expired license (for testing)
-const expiredLicense = generateLicense(
-  {
-    customerId: 'cust_expired_001',
-    customerName: 'Expired User',
-    licenseType: 'full',
-    expirationDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), // Yesterday
-    featureFlags: {
-      canExport: true,
-      canBackup: true,
-      canImport: true,
+  // Expired license (for testing)
+  const expiredLicense = generateLicense(
+    {
+      customerId: 'cust_expired_001',
+      customerName: 'Expired User',
+      licenseType: 'full',
+      expirationDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), // Yesterday
+      featureFlags: {
+        canExport: true,
+        canBackup: true,
+        canImport: true,
+      },
+      machineId: targetMachineId,
     },
-  },
-  TEST_PRIVATE_KEY
-);
+    TEST_PRIVATE_KEY
+  );
 
-console.log('='.repeat(60));
-console.log('GESTION DES ARRIVAGES - Test License Keys');
-console.log('='.repeat(60));
-console.log('\n⚠️  DEVELOPMENT USE ONLY - DO NOT USE IN PRODUCTION\n');
+  // Self-test: verify the signature works
+  console.log('🔒 Self-test: Verifying signature...');
+  const [testPayload, testSignature] = fullLicense.split('.');
+  const verifier = crypto.createVerify('SHA256');
+  verifier.update(testPayload);
+  verifier.end();
 
-// Self-test: verify the signature works
-console.log('🔒 Self-test: Verifying signature...');
-const [testPayload, testSignature] = fullLicense.split('.');
-const verifier = crypto.createVerify('SHA256');
-verifier.update(testPayload);
-verifier.end();
-
-const TEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+  const TEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyabjEHTLPaUf/vbaPQV0
 0oeHxWsc4QptA2rF/Agt5qoRYQOkMUBYoyQhwR3W4797M5XtD7FC39Oj4BLjf3uc
 qgQwXeeF7zxV9iqimFSAlqef+Lf7aWA+Ykaw0y/n109Mr0uXRVtLAZpdzEtpmdj3
@@ -148,26 +174,35 @@ bBB4cz9gp9CI/7n1hkrW8lKmRcJeeSITgNrIbSetjcCxo+wIIVOPVF3T1YPWiOR7
 uQIDAQAB
 -----END PUBLIC KEY-----`;
 
-const isValid = verifier.verify(TEST_PUBLIC_KEY, testSignature, 'base64');
-console.log('✅ Signature verification:', isValid ? 'PASSED' : 'FAILED');
-console.log('');
+  const isValid = verifier.verify(TEST_PUBLIC_KEY, testSignature, 'base64');
+  console.log('✅ Signature verification:', isValid ? 'PASSED' : 'FAILED');
+  console.log('');
 
-console.log('📋 FULL LICENSE (1 year):');
-console.log('-'.repeat(40));
-console.log(fullLicense);
-console.log('\n');
+  console.log('📋 FULL LICENSE (1 year):');
+  console.log('-'.repeat(40));
+  console.log(fullLicense);
+  console.log('\n');
 
-console.log('📋 TRIAL LICENSE (30 days):');
-console.log('-'.repeat(40));
-console.log(trialLicense);
-console.log('\n');
+  console.log('📋 TRIAL LICENSE (30 days):');
+  console.log('-'.repeat(40));
+  console.log(trialLicense);
+  console.log('\n');
 
-console.log('📋 EXPIRED LICENSE (for testing):');
-console.log('-'.repeat(40));
-console.log(expiredLicense);
-console.log('\n');
+  console.log('📋 EXPIRED LICENSE (for testing):');
+  console.log('-'.repeat(40));
+  console.log(expiredLicense);
+  console.log('\n');
 
-console.log('='.repeat(60));
-console.log('Copy one of the above keys and paste it in the app\'s');
-console.log('license activation dialog to test.');
-console.log('='.repeat(60));
+  console.log('='.repeat(60));
+  console.log('Copy one of the above keys and paste it in the app\'s');
+  console.log('license activation dialog to test.');
+  if (isMachineBound) {
+    console.log('');
+    console.log('⚠️  These licenses are MACHINE-BOUND and will only work on');
+    console.log(`   machine: ${targetMachineId}`);
+  }
+  console.log('='.repeat(60));
+}
+
+// Run the async main function
+main().catch(console.error);

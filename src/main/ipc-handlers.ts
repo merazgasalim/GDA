@@ -17,6 +17,7 @@ import {
   CreatePriceEntrySchema,
   ExportOptionsSchema,
   CreateSupplierSchema,
+  CreateCompatibilitySchema,
 } from '../shared/types';
 import {
   queryEntries,
@@ -69,6 +70,15 @@ import {
   searchSuppliers,
   getSupplierPhonesByName,
 } from './services/supplier-service';
+import {
+  addCompatibility,
+  removeCompatibility,
+  getCompatibilitiesForProduct,
+  searchProductsForCompatibility,
+  getCompatibilitySummary,
+  checkCompatibilityExists,
+  getBulkCompatibilityCounts,
+} from './services/compatibility-service';
 
 // ===========================================
 // ERROR HANDLING UTILITY
@@ -446,6 +456,126 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
   });
 
   // ===========================================
+  // PRODUCT COMPATIBILITY HANDLERS (RENVOI / ÉQUIVALENCE)
+  // ===========================================
+  // Compatible References feature for auto spare parts.
+  // All operations are audited via OperationLog.
+
+  ipcMain.handle(
+    IPC_CHANNELS.COMPATIBILITY_GET_FOR_PRODUCT,
+    async (_event, params: { productId: string; includeIncoming?: boolean; relationType?: string; includeInactive?: boolean }) => {
+      try {
+        if (!params?.productId || typeof params.productId !== 'string') {
+          throw new Error('Invalid product ID');
+        }
+        return await getCompatibilitiesForProduct({
+          productId: params.productId,
+          includeIncoming: params.includeIncoming ?? false,
+          relationType: params.relationType as any,
+          includeInactive: params.includeInactive ?? false,
+        });
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    }
+  );
+
+  ipcMain.handle(IPC_CHANNELS.COMPATIBILITY_ADD, async (_event, input) => {
+    try {
+      // Validate input using Zod schema
+      const validatedInput = CreateCompatibilitySchema.parse(input);
+      return await addCompatibility(validatedInput);
+    } catch (error) {
+      console.error('Error adding compatibility:', error);
+      return {
+        success: false,
+        error: sanitizeError(error),
+      };
+    }
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.COMPATIBILITY_REMOVE,
+    async (_event, compatibilityId: string, reason?: string) => {
+      try {
+        if (!compatibilityId || typeof compatibilityId !== 'string') {
+          throw new Error('Invalid compatibility ID');
+        }
+        return await removeCompatibility(compatibilityId, reason);
+      } catch (error) {
+        console.error('Error removing compatibility:', error);
+        return {
+          success: false,
+          error: sanitizeError(error),
+        };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.COMPATIBILITY_SEARCH_PRODUCTS,
+    async (_event, sourceProductId: string, query: string, limit?: number) => {
+      try {
+        if (!sourceProductId || typeof sourceProductId !== 'string') {
+          throw new Error('Invalid source product ID');
+        }
+        return await searchProductsForCompatibility(sourceProductId, query || '', limit ?? 20);
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    }
+  );
+
+  ipcMain.handle(IPC_CHANNELS.COMPATIBILITY_GET_SUMMARY, async (_event, productId: string) => {
+    try {
+      if (!productId || typeof productId !== 'string') {
+        throw new Error('Invalid product ID');
+      }
+      return await getCompatibilitySummary(productId);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.COMPATIBILITY_CHECK_EXISTS,
+    async (_event, sourceProductId: string, targetProductId: string, relationType?: string) => {
+      try {
+        if (!sourceProductId || !targetProductId) {
+          throw new Error('Invalid product IDs');
+        }
+        return await checkCompatibilityExists(
+          sourceProductId,
+          targetProductId,
+          relationType as any
+        );
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.COMPATIBILITY_GET_BULK_COUNTS,
+    async (_event, productIds: string[]) => {
+      try {
+        if (!Array.isArray(productIds)) {
+          throw new Error('Invalid product IDs array');
+        }
+        const countMap = await getBulkCompatibilityCounts(productIds);
+        // Convert Map to plain object for IPC transfer
+        const result: Record<string, number> = {};
+        countMap.forEach((count, productId) => {
+          result[productId] = count;
+        });
+        return result;
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    }
+  );
+
+  // ===========================================
   // EXPORT HANDLERS
   // ===========================================
 
@@ -565,8 +695,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
     const result = await dialog.showMessageBox(mainWindow!, options);
     return result.response;
   });
-
-  console.log('IPC handlers registered');
 }
 
 // Cleanup function
