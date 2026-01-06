@@ -94,7 +94,7 @@ async function validateCompatibilityInput(
   const db = getPrisma();
   
   // Rule 1: Source and target must be different
-  if (input.sourceProductId === input.targetProductId) {
+  if (input.targetType === 'INTERNAL' && input.sourceProductId === input.targetProductId) {
     return {
       isValid: false,
       error: 'Un produit ne peut pas être compatible avec lui-même',
@@ -112,24 +112,35 @@ async function validateCompatibilityInput(
     };
   }
   
-  // Rule 3: Target product must exist
-  const targetExists = await db.priceEntry.findFirst({
-    where: { id: input.targetProductId, isActive: true },
-  });
-  if (!targetExists) {
-    return {
-      isValid: false,
-      error: 'Le produit cible n\'existe pas ou n\'est plus actif',
-    };
+  // Rule 3: Target validation depends on targetType
+  if (input.targetType === 'INTERNAL') {
+    if (!input.targetProductId) {
+      return { isValid: false, error: 'ID du produit cible requise' };
+    }
+    const targetExists = await db.priceEntry.findFirst({
+      where: { id: input.targetProductId, isActive: true },
+    });
+    if (!targetExists) {
+      return {
+        isValid: false,
+        error: 'Le produit cible n\'existe pas ou n\'est plus actif',
+      };
+    }
+  } else {
+    // EXTERNAL: either externalReferenceId provided or externalReference data will be created later
+    if (!input.externalReferenceId && !input.externalReference) {
+      return { isValid: false, error: 'Référence externe requise' };
+    }
   }
-  
-  // Rule 4: No duplicate relation of same type (only check active relations)
+
+  // Rule 4: No duplicate relation of same type (active relations)
   const existingRelation = await db.productCompatibility.findFirst({
     where: {
       sourceProductId: input.sourceProductId,
-      targetProductId: input.targetProductId,
       relationType: input.relationType,
       isActive: true,
+      ...(input.targetType === 'INTERNAL' && input.targetProductId ? { targetProductId: input.targetProductId } : {}),
+      ...(input.targetType === 'EXTERNAL' && input.externalReferenceId ? { externalReferenceId: input.externalReferenceId } : {}),
     },
   });
   if (existingRelation) {
@@ -180,54 +191,102 @@ export async function addCompatibility(
     // Create operation log entry
     operationId = await createOperation({
       type: 'COMPATIBILITY_ADD',
-      description: `Ajout de compatibilité: ${input.sourceProductId} → ${input.targetProductId} (${input.relationType})`,
+      description: `Ajout de compatibilité: ${input.sourceProductId} → ${input.targetType === 'INTERNAL' ? input.targetProductId : 'EXTERNAL'} (${input.relationType})`,
       metadata: {
         sourceProductId: input.sourceProductId,
-        targetProductId: input.targetProductId,
+        targetType: input.targetType,
+        targetProductId: input.targetProductId ?? undefined,
+        externalReferenceId: input.externalReferenceId ?? undefined,
         relationType: input.relationType,
         note: input.note ?? undefined,
       },
       createdBy,
     });
-    
+
+    // If external target and no externalReferenceId provided, create or reuse external record
+    let externalId: string | null = null;
+    if (input.targetType === 'EXTERNAL') {
+      if (input.externalReferenceId) {
+        externalId = input.externalReferenceId;
+      } else if (input.externalReference) {
+        const normRef = input.externalReference.reference.trim().toUpperCase();
+        const normBrand = input.externalReference.brand.trim().toUpperCase();
+        const existingExt = await db.externalProductReference.findFirst({
+          where: { reference: normRef, brand: normBrand },
+        });
+        if (existingExt) {
+          externalId = existingExt.id;
+        } else {
+          const created = await db.externalProductReference.create({
+            data: {
+              id: uuidv4(),
+              reference: normRef,
+              designation: input.externalReference.designation.trim(),
+              brand: normBrand,
+              notes: input.externalReference.notes ?? null,
+              createdBy,
+            },
+          });
+          externalId = created.id;
+        }
+      }
+    }
+
     // Create compatibility record
-    const compatibility = await db.productCompatibility.create({
-      data: {
-        id: uuidv4(),
-        sourceProductId: input.sourceProductId,
-        targetProductId: input.targetProductId,
-        relationType: input.relationType,
-        note: input.note ?? null,
-        isActive: true,
-        createdBy,
-        operationId,
-      },
-    });
-    
-    // Complete operation
-    await completeOperation({
+    const data: any = {
+      id: uuidv4(),
+      sourceProductId: input.sourceProductId,
+      targetType: input.targetType ?? 'INTERNAL',
+      relationType: input.relationType,
+      note: input.note ?? null,
+      isActive: true,
+      createdBy,
       operationId,
-      rowCount: 1,
-    });
-    
+    };
+
+
+    // Only include targetProductId if it is a non-empty string
+    if (typeof input.targetProductId === 'string' && input.targetProductId.length > 0 && input.targetType === 'INTERNAL') {
+      data.targetProductId = input.targetProductId;
+    } else if ('targetProductId' in data) {
+      delete data.targetProductId;
+    }
+
+    // Set externalReferenceId only when available
+    if (externalId) {
+      data.externalReferenceId = externalId;
+    }
+
+    const compatibility = await db.productCompatibility.create({ data });
+
+    // Complete operation
+    await completeOperation({ operationId, rowCount: 1 });
+
+    // Normalize the returned compatibility object to match our shared `ProductCompatibility` type
     return {
       success: true,
       compatibility: {
-        ...compatibility,
+        id: compatibility.id,
+        sourceProductId: compatibility.sourceProductId,
+        targetType: compatibility.targetType as 'INTERNAL' | 'EXTERNAL',
+        targetProductId: compatibility.targetProductId ?? null,
+        externalReferenceId: (compatibility as any).externalReferenceId ?? null,
         relationType: compatibility.relationType as CompatibilityRelationType,
+        note: compatibility.note ?? null,
+        isActive: compatibility.isActive,
         createdAt: compatibility.createdAt,
-        deactivatedAt: compatibility.deactivatedAt,
+        createdBy: compatibility.createdBy,
+        deactivatedAt: compatibility.deactivatedAt ?? null,
+        deactivatedBy: compatibility.deactivatedBy ?? null,
+        operationId: compatibility.operationId ?? null,
       },
       operationId,
     };
   } catch (error) {
     console.error('[CompatibilityService] Failed to add compatibility:', error);
-    
-    // Mark operation as failed if it was created
     if (operationId) {
       await failOperation(operationId, error instanceof Error ? error.message : 'Unknown error');
     }
-    
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Failed to add compatibility',
@@ -281,11 +340,12 @@ export async function removeCompatibility(
     // Create operation log entry
     operationId = await createOperation({
       type: 'COMPATIBILITY_REMOVE',
-      description: `Suppression de compatibilité: ${existing.sourceProductId} → ${existing.targetProductId}`,
+      description: `Suppression de compatibilité: ${existing.sourceProductId} → ${existing.targetProductId ?? existing.externalReferenceId}`,
       metadata: {
         compatibilityId,
         sourceProductId: existing.sourceProductId,
-        targetProductId: existing.targetProductId,
+        targetProductId: existing.targetProductId ?? undefined,
+        externalReferenceId: (existing as any).externalReferenceId ?? undefined,
         relationType: existing.relationType,
         reason: reason ?? undefined,
       },
@@ -382,37 +442,66 @@ export async function getCompatibilitiesForProduct(
   const allRelations = [...outgoingRelations, ...incomingRelations];
   
   // Get unique product IDs to fetch details
+  // Build sets of internal product IDs and external reference IDs we need to fetch
   const productIds = new Set<string>();
+  const externalIds = new Set<string>();
   for (const rel of allRelations) {
-    // For outgoing, we need target details; for incoming, we need source details
     if (rel.sourceProductId === productId) {
-      productIds.add(rel.targetProductId);
+      // outgoing: target may be internal or external
+      if ((rel as any).targetType === 'EXTERNAL' && (rel as any).externalReferenceId) {
+        externalIds.add((rel as any).externalReferenceId);
+      } else if (rel.targetProductId) {
+        productIds.add(rel.targetProductId);
+      }
     } else {
+      // incoming: related product is the sourceProductId (always internal)
       productIds.add(rel.sourceProductId);
     }
   }
-  
-  // Fetch product details
-  const products = await db.priceEntry.findMany({
-    where: {
-      id: { in: Array.from(productIds) },
-    },
-  });
-  
+
+  // Fetch product and external details
+  const products = await db.priceEntry.findMany({ where: { id: { in: Array.from(productIds) } } });
+  const externals = await db.externalProductReference.findMany({ where: { id: { in: Array.from(externalIds) } } });
+
   const productMap = new Map(products.map(p => [p.id, p]));
-  
-  // Build result with resolved details
+  const externalMap = new Map(externals.map(e => [e.id, e]));
+
+  // Build result with resolved details (handle INTERNAL or EXTERNAL targets)
   const result: CompatibilityWithDetails[] = allRelations.map(rel => {
     const isOutgoing = rel.sourceProductId === productId;
+
+    // Outgoing and external
+    if (rel.targetType === 'EXTERNAL' && rel.externalReferenceId) {
+      const ext = externalMap.get(rel.externalReferenceId);
+      return {
+        id: rel.id,
+        relationType: rel.relationType as CompatibilityRelationType,
+        note: rel.note,
+        createdAt: rel.createdAt,
+        createdBy: rel.createdBy,
+        targetType: 'EXTERNAL',
+        reference: ext?.reference ?? 'N/A',
+        designation: ext?.designation ?? 'N/A',
+        brand: ext?.brand ?? 'N/A',
+        supplierName: 'N/A',
+        price: null,
+        sourceProductId: rel.sourceProductId,
+        targetProductId: null,
+        externalReferenceId: rel.externalReferenceId,
+      };
+    }
+
+    // Internal target (or incoming where related product is internal)
     const relatedProductId = isOutgoing ? rel.targetProductId : rel.sourceProductId;
-    const relatedProduct = productMap.get(relatedProductId);
-    
+    const relatedProduct = relatedProductId ? productMap.get(relatedProductId) : undefined;
+
     return {
       id: rel.id,
       relationType: rel.relationType as CompatibilityRelationType,
       note: rel.note,
       createdAt: rel.createdAt,
       createdBy: rel.createdBy,
+      targetType: 'INTERNAL',
       reference: relatedProduct?.reference ?? 'N/A',
       designation: relatedProduct?.designation ?? 'N/A',
       brand: relatedProduct?.brand ?? 'N/A',
@@ -422,7 +511,7 @@ export async function getCompatibilitiesForProduct(
       targetProductId: rel.targetProductId,
     };
   });
-  
+
   return result;
 }
 
@@ -534,14 +623,15 @@ export async function searchProductsForCompatibility(
   });
   
   const relationMap = new Map<string, CompatibilityRelationType>(
-    existingRelations.map((r: { targetProductId: string; relationType: string }) => [
-      r.targetProductId,
-      r.relationType as CompatibilityRelationType,
-    ])
+    existingRelations
+      .filter((r: { targetProductId: string | null }) => !!r.targetProductId)
+      .map((r: { targetProductId: string | null; relationType: string }) => [
+        r.targetProductId as string,
+        r.relationType as CompatibilityRelationType,
+      ])
   );
-  
-  // Build results
-  return products.map((p): CompatibilitySearchResult => ({
+  // Build initial results for internal products
+  const results: CompatibilitySearchResult[] = products.map((p): CompatibilitySearchResult => ({
     id: p.id,
     reference: p.reference,
     designation: p.designation,
@@ -550,7 +640,57 @@ export async function searchProductsForCompatibility(
     price: p.price,
     hasExistingRelation: relationMap.has(p.id),
     existingRelationType: relationMap.get(p.id),
+    targetType: 'INTERNAL',
   }));
+
+  // Also search external references and include them in results
+  const externals = await db.externalProductReference.findMany({
+    where: {
+      OR: [
+        { reference: { contains: searchTerm } },
+        { designation: { contains: searchTerm } },
+        { brand: { contains: searchTerm } },
+      ],
+    },
+    take: limit,
+  });
+
+  if (externals.length > 0) {
+    const extIds = externals.map(e => e.id);
+    const existingExtRelations = await db.productCompatibility.findMany({
+      where: {
+        sourceProductId,
+        externalReferenceId: { in: extIds },
+        isActive: true,
+      },
+      select: { externalReferenceId: true, relationType: true },
+    });
+
+    const extRelationMap = new Map<string, CompatibilityRelationType>(
+      existingExtRelations
+        .filter((r: { externalReferenceId: string | null }) => !!r.externalReferenceId)
+        .map((r: { externalReferenceId: string | null; relationType: string }) => [
+          r.externalReferenceId as string,
+          r.relationType as CompatibilityRelationType,
+        ])
+    );
+
+    for (const e of externals) {
+      results.push({
+        id: e.id,
+        reference: e.reference,
+        designation: e.designation,
+        brand: e.brand,
+        supplierName: null,
+        price: null,
+        hasExistingRelation: extRelationMap.has(e.id),
+        existingRelationType: extRelationMap.get(e.id),
+        targetType: 'EXTERNAL',
+      });
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -571,7 +711,10 @@ export async function checkCompatibilityExists(
   const existing = await db.productCompatibility.findFirst({
     where: {
       sourceProductId,
-      targetProductId,
+      OR: [
+        { targetProductId },
+        { externalReferenceId: targetProductId },
+      ],
       ...(relationType && { relationType }),
       isActive: true,
     },
@@ -643,13 +786,75 @@ export async function getBulkCompatibilityCounts(
   const countMap = new Map<string, number>();
   
   for (const item of outgoing) {
-    countMap.set(item.sourceProductId, item._count.id);
+    const srcId = item.sourceProductId;
+    if (!srcId) continue;
+    countMap.set(srcId, item._count.id);
   }
   
   for (const item of incoming) {
-    const existingCount = countMap.get(item.targetProductId) || 0;
-    countMap.set(item.targetProductId, existingCount + item._count.id);
+    const targetId = item.targetProductId;
+    if (!targetId) continue;
+    const existingCount = countMap.get(targetId) || 0;
+    countMap.set(targetId, existingCount + item._count.id);
   }
   
   return countMap;
+}
+
+/**
+ * Find an external reference by normalized reference+brand (trim+upper).
+ */
+export async function findExternalReferenceByReferenceAndBrand(
+  reference: string,
+  brand: string
+): Promise<{ id: string; reference: string; brand: string } | null> {
+  const db = getPrisma();
+  const normRef = reference.trim().toUpperCase();
+  const normBrand = brand.trim().toUpperCase();
+  const ext = await db.externalProductReference.findFirst({ where: { reference: normRef, brand: normBrand, isActive: true } });
+  if (!ext) return null;
+  return { id: ext.id, reference: ext.reference, brand: ext.brand };
+}
+
+/**
+ * Convert an external reference into a real internal product.
+ * - Updates all ProductCompatibility entries that referenced the external to point to the new product
+ * - Preserves operation provenance by creating a conversion OperationLog
+ * - Soft-deletes the external reference
+ */
+export async function convertExternalToInternal(
+  externalReferenceId: string,
+  newProductId: string,
+  convertedBy: string = 'local'
+): Promise<{ success: boolean; operationId?: string; error?: string }> {
+  const db = getPrisma();
+  let operationId: string | undefined;
+
+  try {
+    operationId = await createOperation({
+      type: 'SYSTEM_MIGRATE',
+      description: `Conversion référence externe ${externalReferenceId} → produit ${newProductId}`,
+      metadata: { externalReferenceId, newProductId },
+      createdBy: convertedBy,
+    });
+
+    // Update compatibilities: set targetType to INTERNAL, targetProductId to newProductId, clear externalReferenceId
+    await db.productCompatibility.updateMany({
+      where: { externalReferenceId, isActive: true },
+      data: { targetType: 'INTERNAL', targetProductId: newProductId, externalReferenceId: null },
+    });
+
+    // Soft-delete external reference
+    await db.externalProductReference.update({
+      where: { id: externalReferenceId },
+      data: { isActive: false, deactivatedAt: new Date(), deactivatedBy: convertedBy },
+    });
+
+    await completeOperation({ operationId, rowCount: 1 });
+    return { success: true, operationId };
+  } catch (err) {
+    console.error('[CompatibilityService] Failed to convert external reference:', err);
+    if (operationId) await failOperation(operationId, err instanceof Error ? err.message : 'Unknown error');
+    return { success: false, error: err instanceof Error ? err.message : 'Conversion failed' };
+  }
 }

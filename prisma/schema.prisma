@@ -188,8 +188,18 @@ model ProductCompatibility {
   /// The originating product reference (source of the compatibility link)
   sourceProductId  String
   
-  /// The target product reference that is compatible with source
-  targetProductId  String
+  /// Target type: 'INTERNAL' or 'EXTERNAL'.
+  /// NOTE: SQLite doesn't support enums; validation enforced in service layer.
+  targetType       String        @default("INTERNAL")
+
+  /// If targetType = 'INTERNAL', this references PriceEntry.id
+  targetProductId  String?
+
+  /// If targetType = 'EXTERNAL', this references ExternalProductReference.id
+  externalReferenceId String?
+
+  /// Relation field to the ExternalProductReference model when target is external
+  externalReference ExternalProductReference? @relation("ExternalCompatibilities", fields: [externalReferenceId], references: [id])
   
   /// Type of compatibility relationship
   /// EQUIVALENT: Functionally identical, interchangeable
@@ -218,13 +228,39 @@ model ProductCompatibility {
   // Indexes for efficient querying
   @@index([sourceProductId])
   @@index([targetProductId])
+  @@index([externalReferenceId])
   @@index([relationType])
   @@index([isActive])
   @@index([operationId])
   @@index([sourceProductId, isActive])
   @@index([targetProductId, isActive])
-  // Unique constraint: no duplicate relations of same type between same products
+  // Unique constraints for both internal and external targets
+  // Internal: unique on (sourceProductId, targetProductId, relationType)
+  // External: unique on (sourceProductId, externalReferenceId, relationType)
   @@unique([sourceProductId, targetProductId, relationType])
+  @@unique([sourceProductId, externalReferenceId, relationType])
+}
+
+/// External product references that do not exist as inventory items.
+/// These are non-inventory, informational-only references used for compatibility knowledge.
+model ExternalProductReference {
+  id         String   @id @default(uuid())
+  reference  String
+  designation String
+  brand      String
+  notes      String?
+  createdAt  DateTime @default(now())
+  createdBy  String   @default("system")
+  isActive   Boolean  @default(true)
+  deactivatedAt DateTime?
+  deactivatedBy String?
+
+  // Back-reference for relations
+  compatibilities ProductCompatibility[] @relation("ExternalCompatibilities")
+
+  @@index([reference])
+  @@index([brand])
+  @@unique([reference, brand])
 }
 
 // ===========================================

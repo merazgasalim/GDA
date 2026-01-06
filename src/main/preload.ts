@@ -135,6 +135,10 @@ const electronApi: ElectronApi = {
     
     getBulkCounts: (productIds: string[]) =>
       ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_GET_BULK_COUNTS, productIds),
+    findExternalMatch: (reference: string, brand: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_FIND_EXTERNAL, reference, brand),
+    convertExternal: (externalReferenceId: string, newProductId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_CONVERT_EXTERNAL, externalReferenceId, newProductId),
   },
 
   // ===========================================

@@ -51,7 +51,14 @@ function getDatabasePath(): string {
     fs.mkdirSync(dbDir, { recursive: true });
   }
   
-  return path.join(dbDir, 'gda.db');
+    // Use the DATABASE_URL from .env if available, else fallback
+    const dbUrl = process.env.DATABASE_URL;
+    if (dbUrl && dbUrl.startsWith('file:')) {
+      // Remove 'file:' prefix and any quotes
+      return dbUrl.replace('file:', '').replace(/"/g, '');
+    }
+    // fallback to workspace path
+    return path.resolve(__dirname, '..', '..', '..', 'prisma', 'dev.db');
 }
 
 /**
@@ -95,6 +102,50 @@ export async function initializeDatabase(): Promise<{
 
     // Connect and apply migrations if needed
     await prisma.$connect();
+    // Defensive runtime migration: ensure ProductCompatibility.targetType exists
+    try {
+      // Query table info for ProductCompatibility
+      // Using raw query because introspection may not be available on older DBs
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tableInfo: any = await prisma.$queryRawUnsafe(`PRAGMA table_info("ProductCompatibility")`);
+      const hasTargetType = Array.isArray(tableInfo) && tableInfo.some((col: any) => col.name === 'targetType');
+
+      if (!hasTargetType) {
+        console.info('ProductCompatibility.targetType missing — adding column');
+        // Add the column with a default so existing rows receive a valid value
+        await prisma.$executeRawUnsafe(`ALTER TABLE "ProductCompatibility" ADD COLUMN "targetType" TEXT NOT NULL DEFAULT 'INTERNAL'`);
+        // Create an index for the new column to keep query performance
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ProductCompatibility_targetType_idx" ON "ProductCompatibility"("targetType")`);
+      }
+      const hasExternalReferenceId = Array.isArray(tableInfo) && tableInfo.some((col: any) => col.name === 'externalReferenceId');
+      if (!hasExternalReferenceId) {
+        console.info('ProductCompatibility.externalReferenceId missing — adding column and ExternalProductReference table if needed');
+        // Add the column (nullable) for older DBs
+        await prisma.$executeRawUnsafe(`ALTER TABLE "ProductCompatibility" ADD COLUMN "externalReferenceId" TEXT`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ProductCompatibility_externalReferenceId_idx" ON "ProductCompatibility"("externalReferenceId")`);
+
+        // Ensure ExternalProductReference table exists (create minimal schema compatible with Prisma model)
+        await prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "ExternalProductReference" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "reference" TEXT NOT NULL,
+          "designation" TEXT NOT NULL,
+          "brand" TEXT NOT NULL,
+          "notes" TEXT,
+          "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "createdBy" TEXT NOT NULL DEFAULT 'system',
+          "isActive" BOOLEAN NOT NULL DEFAULT true,
+          "deactivatedAt" DATETIME,
+          "deactivatedBy" TEXT
+        )`);
+
+        // Create indexes similar to migration
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ExternalProductReference_reference_idx" ON "ExternalProductReference"("reference")`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ExternalProductReference_brand_idx" ON "ExternalProductReference"("brand")`);
+        await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ExternalProductReference_reference_brand_key" ON "ExternalProductReference"("reference", "brand")`);
+      }
+    } catch (err) {
+      console.warn('Runtime schema adjustment failed:', err);
+    }
     
     // Initialize operation service with the Prisma client
     setOperationServicePrisma(prisma);

@@ -760,7 +760,10 @@ export const COMPATIBILITY_RELATION_DESCRIPTIONS: Record<CompatibilityRelationTy
 export const ProductCompatibilitySchema = z.object({
   id: z.string().uuid(),
   sourceProductId: z.string(),
-  targetProductId: z.string(),
+  // Target may be internal (product) or external (reference)
+  targetType: z.enum(['INTERNAL', 'EXTERNAL']),
+  targetProductId: z.string().nullable(),
+  externalReferenceId: z.string().nullable(),
   relationType: CompatibilityRelationTypeSchema,
   note: z.string().nullable(),
   isActive: z.boolean().default(true),
@@ -782,7 +785,17 @@ export type ProductCompatibility = z.infer<typeof ProductCompatibilitySchema>;
  */
 export const CreateCompatibilitySchema = z.object({
   sourceProductId: z.string().min(1, 'Source product ID is required'),
-  targetProductId: z.string().min(1, 'Target product ID is required'),
+  // Either targetProductId (for existing products) OR externalReferenceId (for external refs)
+  targetType: z.enum(['INTERNAL', 'EXTERNAL']).default('INTERNAL'),
+  targetProductId: z.string().optional().nullable(),
+  externalReferenceId: z.string().optional().nullable(),
+  // If creating an external target inline, provide its data here. Service will reuse if exists.
+  externalReference: z.object({
+    reference: z.string().min(1),
+    designation: z.string().min(1),
+    brand: z.string().min(1),
+    notes: z.string().optional().nullable(),
+  }).optional(),
   relationType: CompatibilityRelationTypeSchema,
   note: z.string().optional().nullable(),
 });
@@ -817,6 +830,8 @@ export interface CompatibilityWithDetails {
   note: string | null;
   createdAt: Date;
   createdBy: string;
+  /** Whether the target is internal (product) or external reference */
+  targetType: 'INTERNAL' | 'EXTERNAL';
   /** The target product's reference code */
   reference: string;
   /** The target product's designation/description */
@@ -830,7 +845,9 @@ export interface CompatibilityWithDetails {
   /** The source product ID (for bi-directional display) */
   sourceProductId: string;
   /** The target product ID */
-  targetProductId: string;
+  targetProductId: string | null;
+  /** If external, the external reference ID */
+  externalReferenceId?: string | null;
 }
 
 /**
@@ -855,8 +872,10 @@ export interface CompatibilitySearchResult {
   reference: string;
   designation: string;
   brand: string;
-  supplierName: string;
-  price: number;
+  supplierName: string | null;
+  price: number | null;
+  /** Target type for this search result (INTERNAL or EXTERNAL) */
+  targetType?: 'INTERNAL' | 'EXTERNAL';
   /** Whether this product already has a compatibility relation with the source */
   hasExistingRelation: boolean;
   /** If hasExistingRelation, what type */

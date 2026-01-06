@@ -25,7 +25,7 @@ import type { IncompleteOperation, OperationType } from '../../shared/types';
 // ===========================================
 
 function formatOperationType(type: OperationType): string {
-  const labels: Record<OperationType, string> = {
+  const labels: Partial<Record<OperationType, string>> = {
     IMPORT: 'Import',
     MANUAL_ADD: 'Ajout manuel',
     BULK_EDIT: 'Modification en masse',

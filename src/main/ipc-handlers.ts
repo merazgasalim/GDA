@@ -78,6 +78,8 @@ import {
   getCompatibilitySummary,
   checkCompatibilityExists,
   getBulkCompatibilityCounts,
+  findExternalReferenceByReferenceAndBrand,
+  convertExternalToInternal,
 } from './services/compatibility-service';
 
 // ===========================================
@@ -139,7 +141,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
   ipcMain.handle(IPC_CHANNELS.DB_CREATE_ENTRY, async (_event, data) => {
     try {
       const validatedData = CreatePriceEntrySchema.parse(data);
-      return await createEntry(validatedData);
+      // Create the entry first
+      const newEntry = await createEntry(validatedData);
+
+      // After creation, detect if an external compatibility reference matches (reference+brand)
+      try {
+        const match = await findExternalReferenceByReferenceAndBrand(newEntry.reference, newEntry.brand);
+        if (match) {
+          // Ask user if they want to convert the external reference to this new product
+          const result = await dialog.showMessageBox(mainWindow!, {
+            type: 'question',
+            buttons: ['Non', 'Convertir'],
+            defaultId: 1,
+            cancelId: 0,
+            title: 'Correspondance référence externe détectée',
+            message: `Cette référence (${newEntry.reference} - ${newEntry.brand}) correspond à une référence externe existante. Voulez-vous convertir cette référence externe en produit réel et migrer les relations ?`,
+          });
+
+          if (result.response === 1) {
+            // User confirmed conversion
+            await convertExternalToInternal(match.id, newEntry.id);
+          }
+        }
+      } catch (err) {
+        console.error('Error during external reference detection/conversion:', err);
+      }
+
+      return newEntry;
     } catch (error) {
       throw new Error(sanitizeError(error));
     }
@@ -532,6 +560,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
         throw new Error('Invalid product ID');
       }
       return await getCompatibilitySummary(productId);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  // Find external reference by reference+brand (normalized)
+  ipcMain.handle(IPC_CHANNELS.COMPATIBILITY_FIND_EXTERNAL, async (_event, reference: string, brand: string) => {
+    try {
+      if (!reference || !brand) throw new Error('Reference and brand required');
+      return await findExternalReferenceByReferenceAndBrand(reference, brand);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
+  // Convert external reference into internal product (migrate compatibilities)
+  ipcMain.handle(IPC_CHANNELS.COMPATIBILITY_CONVERT_EXTERNAL, async (_event, externalReferenceId: string, newProductId: string) => {
+    try {
+      if (!externalReferenceId || !newProductId) throw new Error('Invalid parameters');
+      return await convertExternalToInternal(externalReferenceId, newProductId);
     } catch (error) {
       throw new Error(sanitizeError(error));
     }

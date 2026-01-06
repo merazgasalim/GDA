@@ -31,7 +31,7 @@ import type { OperationListResult } from '../../shared/ipc-api';
  * Format operation type for display (French labels)
  */
 function formatOperationType(type: OperationType): string {
-  const labels: Record<OperationType, string> = {
+  const labels: Partial<Record<OperationType, string>> = {
     IMPORT: 'Import',
     MANUAL_ADD: 'Ajout manuel',
     BULK_EDIT: 'Modification en masse',

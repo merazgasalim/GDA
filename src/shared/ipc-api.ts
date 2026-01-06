@@ -330,6 +330,10 @@ export interface CompatibilityApi {
    * @returns Object map of productId to count
    */
   getBulkCounts: (productIds: string[]) => Promise<Record<string, number>>;
+  /** Find an external reference matching a reference+brand (normalization applied) */
+  findExternalMatch: (reference: string, brand: string) => Promise<{ id: string; reference: string; brand: string } | null>;
+  /** Convert an external reference to an internal product (migrate compatibilities) */
+  convertExternal: (externalReferenceId: string, newProductId: string) => Promise<{ success: boolean; operationId?: string; error?: string }>;
 }
 
 // ===========================================

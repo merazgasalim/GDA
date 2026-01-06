@@ -381,14 +381,24 @@ export const CompatibleReferencesSection: React.FC<CompatibleReferencesSectionPr
                         
                         {/* Reference */}
                         <td className="px-3 py-2 whitespace-nowrap">
-                          <button
-                            onClick={() => onProductClick?.(
-                              incoming ? compat.sourceProductId : compat.targetProductId
+                          <div className="flex items-center gap-2">
+                            {compat.targetType === 'EXTERNAL' ? (
+                              <span className="text-sm text-yellow-700 flex items-center gap-1">
+                                <span>🔗</span>
+                                <span className="font-medium">{compat.reference}</span>
+                                <span className="text-xs text-gray-500 ml-2">(Référence externe)</span>
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => onProductClick?.(
+                                  incoming ? compat.sourceProductId : compat.targetProductId!
+                                )}
+                                className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                              >
+                                {compat.reference}
+                              </button>
                             )}
-                            className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                          >
-                            {compat.reference}
-                          </button>
+                          </div>
                         </td>
                         
                         {/* Designation */}
@@ -416,13 +426,19 @@ export const CompatibleReferencesSection: React.FC<CompatibleReferencesSectionPr
                         {/* Price */}
                         <td className="px-3 py-2 whitespace-nowrap">
                           <span className="text-sm text-gray-900">
-                            {formatPrice(compat.price)}
+                            {compat.targetType === 'EXTERNAL' ? (
+                              <span className="text-gray-400" title="Cette référence n'est pas stockée dans le système">N/A</span>
+                            ) : (
+                              formatPrice(compat.price)
+                            )}
                           </span>
                         </td>
                         
                         {/* Supplier */}
                         <td className="px-3 py-2 whitespace-nowrap">
-                          <span className="text-sm text-gray-500">{compat.supplierName}</span>
+                          <span className={`text-sm ${compat.targetType === 'EXTERNAL' ? 'text-gray-400' : 'text-gray-500'}`}>
+                            {compat.targetType === 'EXTERNAL' ? 'N/A' : compat.supplierName}
+                          </span>
                         </td>
                         
                         {/* Actions */}
