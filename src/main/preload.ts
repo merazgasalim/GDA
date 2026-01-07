@@ -18,7 +18,6 @@ import type {
   QueryParams,
   CreatePriceEntry,
   ExportOptions,
-  ImportRow,
 } from '../shared/types';
 import type { ElectronApi, ImportParseOptions } from '../shared/ipc-api';
 
@@ -93,6 +92,9 @@ const electronApi: ElectronApi = {
     getList: (params?: any) =>
       ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_GET_LIST, params),
     
+    update: (id: string, input: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_UPDATE, id, input),
+    
     getById: (id: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_GET_BY_ID, id),
     
@@ -107,6 +109,8 @@ const electronApi: ElectronApi = {
     
     getPhonesByName: (supplierName: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_GET_PHONES_BY_NAME, supplierName),
+    countActiveProductsBySupplierName: (supplierName: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUPPLIER_COUNT_ACTIVE_PRODUCTS, supplierName),
   },
 
   // ===========================================

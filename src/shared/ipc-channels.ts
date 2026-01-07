@@ -63,6 +63,7 @@ export const IPC_CHANNELS = {
   SUPPLIER_VALIDATE: 'supplier:validate',
   SUPPLIER_SEARCH: 'supplier:search',
   SUPPLIER_GET_PHONES_BY_NAME: 'supplier:get-phones-by-name',
+  SUPPLIER_COUNT_ACTIVE_PRODUCTS: 'supplier:count-active-products',
 
   // ===========================================
   // PRODUCT COMPATIBILITY (RENVOI / ÉQUIVALENCE)

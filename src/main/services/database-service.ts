@@ -19,6 +19,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 import {
   PriceEntry,
   CreatePriceEntry,
@@ -28,7 +29,8 @@ import {
 } from '../../shared/types';
 import { DatabaseStats } from '../../shared/ipc-api';
 import { deriveEncryptionKey } from './license-service';
-import { setOperationServicePrisma } from './operation-service';
+import { setOperationServicePrisma, completeOperation } from './operation-service';
+import { assertOperationAttached } from '../../shared/operationService';
 import { setSupplierServicePrisma } from './supplier-service';
 import { setCompatibilityServicePrisma } from './compatibility-service';
 
@@ -84,6 +86,54 @@ export async function initializeDatabase(): Promise<{
 
     const dbPath = getDatabasePath();
     const dbUrl = `file:${dbPath}`;
+
+    // At runtime, avoid invoking the Prisma CLI (native query-engine) by default
+    // because it can crash when spawned inside Electron in some environments.
+    // Instead, rely on the in-place PRAGMA/ALTER adjustments below to patch
+    // the schema. If you explicitly want to enable runtime migrations, set
+    // the environment variable `PRISMA_RUNTIME_MIGRATIONS=true` in your dev
+    // environment (not recommended for production builds).
+    if (process.env.PRISMA_RUNTIME_MIGRATIONS === 'true') {
+      try {
+        console.info('Runtime migrations enabled: attempting to run Prisma CLI (deploy)');
+        let projectRoot = path.resolve(__dirname);
+        for (let i = 0; i < 6; i++) {
+          if (fs.existsSync(path.join(projectRoot, 'package.json'))) break;
+          projectRoot = path.resolve(projectRoot, '..');
+        }
+        const schemaPath = path.join(projectRoot, 'prisma', 'schema.prisma');
+        const prismaBin = path.join(projectRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'prisma.cmd' : 'prisma');
+        const env = { ...process.env, DATABASE_URL: dbUrl };
+        if (fs.existsSync(prismaBin)) {
+          execFileSync(prismaBin, ['migrate', 'deploy', '--schema', schemaPath], { stdio: 'inherit', cwd: projectRoot, env });
+        } else {
+          execFileSync('npx', ['prisma', 'migrate', 'deploy', '--schema', schemaPath], { stdio: 'inherit', cwd: projectRoot, env });
+        }
+        console.info('Migrations applied successfully');
+      } catch (err) {
+        console.warn('Runtime prisma migrate failed; attempting db push fallback', err);
+        try {
+          let projectRoot = path.resolve(__dirname);
+          for (let i = 0; i < 6; i++) {
+            if (fs.existsSync(path.join(projectRoot, 'package.json'))) break;
+            projectRoot = path.resolve(projectRoot, '..');
+          }
+          const schemaPath = path.join(projectRoot, 'prisma', 'schema.prisma');
+          const prismaBin = path.join(projectRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'prisma.cmd' : 'prisma');
+          const env = { ...process.env, DATABASE_URL: dbUrl };
+          if (fs.existsSync(prismaBin)) {
+            execFileSync(prismaBin, ['db', 'push', '--schema', schemaPath], { stdio: 'inherit', cwd: projectRoot, env });
+          } else {
+            execFileSync('npx', ['prisma', 'db', 'push', '--schema', schemaPath], { stdio: 'inherit', cwd: projectRoot, env });
+          }
+          console.info('Prisma db push succeeded');
+        } catch (err2) {
+          console.error('Failed to ensure database schema automatically:', err2);
+        }
+      }
+    } else {
+      console.info('Skipping runtime Prisma CLI invocation; using in-place SQL schema adjustments instead');
+    }
 
     // Set DATABASE_URL for Prisma
     process.env.DATABASE_URL = dbUrl;
@@ -142,6 +192,91 @@ export async function initializeDatabase(): Promise<{
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ExternalProductReference_reference_idx" ON "ExternalProductReference"("reference")`);
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ExternalProductReference_brand_idx" ON "ExternalProductReference"("brand")`);
         await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ExternalProductReference_reference_brand_key" ON "ExternalProductReference"("reference", "brand")`);
+      }
+      // Ensure PriceEntry.createdBy exists
+      const priceTableInfo: any = await prisma.$queryRawUnsafe(`PRAGMA table_info("PriceEntry")`);
+      const hasPriceCreatedBy = Array.isArray(priceTableInfo) && priceTableInfo.some((col: any) => col.name === 'createdBy');
+      if (!hasPriceCreatedBy) {
+        console.info('PriceEntry.createdBy missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "PriceEntry" ADD COLUMN "createdBy" TEXT NOT NULL DEFAULT 'local'`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "PriceEntry_createdBy_idx" ON "PriceEntry"("createdBy")`);
+      }
+
+      // Ensure OperationLog.type exists
+      const opTableInfo: any = await prisma.$queryRawUnsafe(`PRAGMA table_info("OperationLog")`);
+      const hasOpType = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'type');
+      if (!hasOpType) {
+        console.info('OperationLog.type missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "type" TEXT`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "OperationLog_type_idx" ON "OperationLog"("type")`);
+      }
+      // Ensure OperationLog.rowCount exists
+      const hasOpRowCount = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'rowCount');
+      if (!hasOpRowCount) {
+        console.info('OperationLog.rowCount missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "rowCount" INTEGER NOT NULL DEFAULT 0`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "OperationLog_rowCount_idx" ON "OperationLog"("rowCount")`);
+      }
+      // Ensure OperationLog.description exists
+      const hasOpDescription = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'description');
+      if (!hasOpDescription) {
+        console.info('OperationLog.description missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "description" TEXT`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "OperationLog_description_idx" ON "OperationLog"("description")`);
+      }
+      // Ensure OperationLog.legacyStatus exists
+      const hasOpLegacyStatus = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'legacyStatus');
+      if (!hasOpLegacyStatus) {
+        console.info('OperationLog.legacyStatus missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "legacyStatus" TEXT DEFAULT 'COMPLETED'`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "OperationLog_legacyStatus_idx" ON "OperationLog"("legacyStatus")`);
+      }
+      // Ensure OperationLog.metadata exists
+      const hasOpMetadata = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'metadata');
+      if (!hasOpMetadata) {
+        console.info('OperationLog.metadata missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "metadata" TEXT`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "OperationLog_metadata_idx" ON "OperationLog"("metadata")`);
+      }
+      // Ensure other OperationLog audit columns exist
+      const hasOpCompletedAt = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'completedAt');
+      if (!hasOpCompletedAt) {
+        console.info('OperationLog.completedAt missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "completedAt" DATETIME`);
+      }
+      const hasOpAbandonedAt = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'abandonedAt');
+      if (!hasOpAbandonedAt) {
+        console.info('OperationLog.abandonedAt missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "abandonedAt" DATETIME`);
+      }
+      const hasOpAbandonedBy = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'abandonedBy');
+      if (!hasOpAbandonedBy) {
+        console.info('OperationLog.abandonedBy missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "abandonedBy" TEXT`);
+      }
+      const hasOpAbandonedOpId = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'abandonedOperationId');
+      if (!hasOpAbandonedOpId) {
+        console.info('OperationLog.abandonedOperationId missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "abandonedOperationId" TEXT`);
+      }
+      const hasOpRevertOpId = Array.isArray(opTableInfo) && opTableInfo.some((col: any) => col.name === 'revertOperationId');
+      if (!hasOpRevertOpId) {
+        console.info('OperationLog.revertOperationId missing — adding column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "OperationLog" ADD COLUMN "revertOperationId" TEXT`);
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "OperationLog_revertOperationId_idx" ON "OperationLog"("revertOperationId")`);
+      }
+
+      // Ensure Supplier.createdBy exists
+      try {
+        const supplierTableInfo: any = await prisma.$queryRawUnsafe(`PRAGMA table_info("Supplier")`);
+        const hasSupplierCreatedBy = Array.isArray(supplierTableInfo) && supplierTableInfo.some((col: any) => col.name === 'createdBy');
+        if (!hasSupplierCreatedBy) {
+          console.info('Supplier.createdBy missing — adding column');
+          await prisma.$executeRawUnsafe(`ALTER TABLE "Supplier" ADD COLUMN "createdBy" TEXT NOT NULL DEFAULT 'local'`);
+          await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Supplier_createdBy_idx" ON "Supplier"("createdBy")`);
+        }
+      } catch (supErr) {
+        console.warn('Failed to ensure Supplier.createdBy:', supErr);
       }
     } catch (err) {
       console.warn('Runtime schema adjustment failed:', err);
@@ -379,15 +514,53 @@ export async function getEntry(id: string): Promise<PriceEntry | null> {
  */
 export async function createEntry(data: CreatePriceEntry): Promise<PriceEntry> {
   const db = getPrisma();
-  
-  return db.priceEntry.create({
-    data: {
-      ...data,
-      arrivageDate: data.arrivageDate ?? null,
-      supplierPhone: data.supplierPhone ?? null,
-      notes: data.notes ?? null,
-    },
-  }) as Promise<PriceEntry>;
+  // Enforce operation-logged creation sequence:
+  // 1) create OperationLog
+  // 2) create PriceEntry with operationId inside a transaction
+  // 3) update operation.entityId and complete operation
+  // Create operation and entry in a single transaction to ensure atomicity
+  try {
+    const result = await db.$transaction(async (tx) => {
+      // 1) create operation (canonical + legacy fields)
+      const op = await tx.operationLog.create({ data: ({
+        operationType: 'PRODUCT_CREATE',
+        payloadSnapshot: JSON.stringify(data as any),
+        status: 'APPLIED',
+        createdBy: (data as any).createdBy ?? 'local',
+        type: 'PRODUCT_CREATE',
+        legacyStatus: 'PENDING',
+        metadata: JSON.stringify(data),
+        description: `Create product: ${data.reference} (${data.brand})`,
+        rowCount: 0,
+      } as any) });
+
+      // 2) create price entry linked to operation
+      const createdEntry = await tx.priceEntry.create({ data: ({
+        ...data,
+        arrivageDate: data.arrivageDate ?? null,
+        supplierPhone: data.supplierPhone ?? null,
+        notes: data.notes ?? null,
+        operationId: op.id,
+      } as any) });
+
+      // Runtime assertion: ensure the created entry has operationId
+      assertOperationAttached(createdEntry);
+
+      // 3) update operation.entityId for canonical mapping
+      await tx.operationLog.update({ where: { id: op.id }, data: ({ entityId: createdEntry.id } as any) });
+
+      return { operationId: op.id, createdEntry };
+    });
+
+    // After successful commit, mark operation as completed
+    await completeOperation({ operationId: result.operationId, rowCount: 1, metadata: { productId: result.createdEntry.id } });
+    return result.createdEntry as PriceEntry;
+  } catch (err) {
+    // If op was created and failedOperation should be called, attempt best-effort mark
+    // Note: If transaction failed before op was persisted, there's nothing to mark.
+    console.error('[DatabaseService] createEntry transaction failed:', err);
+    throw err;
+  }
 }
 
 /**
@@ -412,9 +585,7 @@ export async function createEntriesBatch(
     notes: entry.notes ?? null,
   }));
 
-  const result = await db.priceEntry.createMany({
-    data: dataWithBatch,
-  });
+  const result = await db.priceEntry.createMany({ data: dataWithBatch as any });
 
   // Log the import (legacy ImportLog)
   await db.importLog.create({
@@ -672,6 +843,12 @@ export async function createEntriesBatchWithOperation(
   const result = await db.priceEntry.createMany({
     data: dataWithOperation,
   });
+
+  // Verify that the expected number of rows were created with the operationId
+  const actualCount = await db.priceEntry.count({ where: { operationId } });
+  if (actualCount !== result.count) {
+    throw new Error(`Batch insert mismatch: expected ${result.count} rows for operation ${operationId}, found ${actualCount}`);
+  }
 
   // Note: We don't log to ImportLog here - the OperationLog is the source of truth
   // ImportLog is deprecated in favor of the Operations Log system

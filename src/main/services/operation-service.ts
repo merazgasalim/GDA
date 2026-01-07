@@ -40,17 +40,15 @@
 
 import { PrismaClient, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
-import {
-  OperationLog,
+import type {
   OperationLogDisplay,
-  CreateOperation,
   AbandonOperationResult,
   IncompleteOperation,
   OperationMetadata,
   OperationType,
   OperationStatus,
 } from '../../shared/types';
-import { isFeatureAllowed, getLicenseStatus } from './license-service';
+import { getLicenseStatus } from './license-service';
 
 // ===========================================
 // TYPE DEFINITIONS
@@ -108,6 +106,14 @@ function getPrisma(): PrismaClient {
   return prismaClient;
 }
 
+// Dev-time invariant checks
+function assertOperationHasPayload(operation: any, operationId?: string) {
+  const hasPayload = operation && (operation.payloadSnapshot || operation.metadata);
+  if (!hasPayload) {
+    throw new Error(`Operation ${operationId ?? (operation && operation.id) ?? '<unknown>'} missing payloadSnapshot/metadata`);
+  }
+}
+
 // ===========================================
 // OPERATION LIFECYCLE
 // ===========================================
@@ -124,19 +130,24 @@ function getPrisma(): PrismaClient {
 export async function createOperation(options: CreateOperationOptions): Promise<string> {
   const db = getPrisma();
   const operationId = uuidv4();
-  
+  // Create both canonical and legacy fields for compatibility.
   await db.operationLog.create({
     data: {
       id: operationId,
-      type: options.type,
-      status: 'PENDING',
-      description: options.description ?? null,
-      metadata: options.metadata ? JSON.stringify(options.metadata) : null,
+      // canonical
+      operationType: options.type,
+      payloadSnapshot: options.metadata ? JSON.stringify(options.metadata) : JSON.stringify({}),
+      status: 'APPLIED',
       createdBy: options.createdBy ?? 'local',
-      rowCount: 0, // Will be updated on completion
-    },
+      // legacy (kept for UI and older logic)
+      type: options.type,
+      legacyStatus: 'PENDING',
+      metadata: options.metadata ? JSON.stringify(options.metadata) : null,
+      description: options.description ?? null,
+      rowCount: 0,
+    } as any,
   });
-  
+
   return operationId;
 }
 
@@ -153,33 +164,28 @@ export async function completeOperation(options: CompleteOperationOptions): Prom
   const db = getPrisma();
   
   // Build the update data
-  const updateData: Prisma.OperationLogUpdateInput = {
-    status: 'COMPLETED',
+  const updateData: any = {
+    // Keep canonical status unchanged (APPLIED). Update legacy status for compatibility.
+    legacyStatus: 'COMPLETED',
     completedAt: new Date(),
     rowCount: options.rowCount,
   };
-  
-  // Merge metadata if provided
+
+  // Merge into legacy metadata if provided (payloadSnapshot is immutable)
   if (options.metadata) {
     const existing = await db.operationLog.findUnique({
       where: { id: options.operationId },
       select: { metadata: true },
     });
-    
-    const existingMetadata = existing?.metadata 
-      ? JSON.parse(existing.metadata) 
-      : {};
-    
-    updateData.metadata = JSON.stringify({
-      ...existingMetadata,
-      ...options.metadata,
-    });
+    const existingMetadata = existing?.metadata ? JSON.parse(existing.metadata) : {};
+    updateData.metadata = JSON.stringify({ ...existingMetadata, ...options.metadata });
   }
-  
-  await db.operationLog.update({
-    where: { id: options.operationId },
-    data: updateData,
-  });
+
+  // Safety: ensure operation has a payload snapshot before completing
+  const opBefore = await db.operationLog.findUnique({ where: { id: options.operationId }, select: { payloadSnapshot: true, metadata: true } });
+  assertOperationHasPayload(opBefore, options.operationId);
+
+  await db.operationLog.update({ where: { id: options.operationId }, data: updateData as any });
 }
 
 /**
@@ -191,26 +197,15 @@ export async function completeOperation(options: CompleteOperationOptions): Prom
  */
 export async function failOperation(operationId: string, errorMessage: string): Promise<void> {
   const db = getPrisma();
-  
-  // Get existing metadata
-  const existing = await db.operationLog.findUnique({
-    where: { id: operationId },
-    select: { metadata: true },
-  });
-  
-  const existingMetadata = existing?.metadata 
-    ? JSON.parse(existing.metadata) 
-    : {};
-  
+  // Mark legacy status as FAILED and append error to legacy metadata. Canonical payloadSnapshot remains immutable.
+  const existing = await db.operationLog.findUnique({ where: { id: operationId }, select: { metadata: true } });
+  const existingMetadata = existing?.metadata ? JSON.parse(existing.metadata) : {};
   await db.operationLog.update({
     where: { id: operationId },
     data: {
-      status: 'FAILED',
+      legacyStatus: 'FAILED',
       completedAt: new Date(),
-      metadata: JSON.stringify({
-        ...existingMetadata,
-        errorMessage,
-      }),
+      metadata: JSON.stringify({ ...existingMetadata, errorMessage }),
     },
   });
 }
@@ -258,10 +253,22 @@ export async function abandonOperation(options: AbandonOperationOptions): Promis
   // ===========================================
   // FETCH AND VALIDATE OPERATION
   // ===========================================
+  // Read minimal canonical fields to avoid selecting columns that may not
+  // exist on older database schemas (like `legacyStatus`).
   const operation = await db.operationLog.findUnique({
     where: { id: operationId },
-  });
-  
+    select: {
+      id: true,
+      status: true,
+      type: true,
+      description: true,
+      rowCount: true,
+      payloadSnapshot: true,
+      metadata: true,
+      createdAt: true,
+    },
+  } as any);
+
   if (!operation) {
     return {
       success: false,
@@ -283,7 +290,7 @@ export async function abandonOperation(options: AbandonOperationOptions): Promis
   // Only COMPLETED operations can be abandoned
   // PENDING operations should be resolved via finalize or delete
   // FAILED operations are already in a terminal state
-  if (operation.status !== 'COMPLETED') {
+  if (!(operation.status === 'COMPLETED' || operation.status === 'APPLIED')) {
     return {
       success: false,
       operationId,
@@ -297,42 +304,126 @@ export async function abandonOperation(options: AbandonOperationOptions): Promis
   // ===========================================
   const abandonTimestamp = new Date();
   
+  // Safety: ensure operation has a payload snapshot before abandoning
+  assertOperationHasPayload(operation as any, operationId);
   try {
     // Use a transaction to ensure atomicity
     const result = await db.$transaction(async (tx) => {
-      // 1. Mark all related PriceEntry records as inactive
-      //    This is the "soft delete" - data remains but is filtered from queries
-      const updateResult = await tx.priceEntry.updateMany({
-        where: {
-          operationId: operationId,
-          isActive: true, // Only update active records (idempotency)
-        },
-        data: {
-          isActive: false,
-          abandonedAt: abandonTimestamp,
-        },
-      });
-      
+      // Determine behavior based on operation type.
+      // IMPORT: soft-delete PriceEntry rows (existing behavior)
+      // COMPATIBILITY_ADD: soft-delete ProductCompatibility rows created by this operation
+      // SUPPLIER_CREATE: only allow abandon if no active PriceEntry references the supplier; delete supplier record if safe
+      let affectedCount = 0;
+
+      const opType = (operation.type ?? (operation as any).operationType) as string;
+
+      if (opType === 'IMPORT') {
+        const updateResult = await tx.priceEntry.updateMany({
+          where: {
+            operationId: operationId,
+            isActive: true,
+          },
+          data: {
+            isActive: false,
+            abandonedAt: abandonTimestamp,
+          },
+        });
+        affectedCount = updateResult.count;
+      } else if (opType === 'COMPATIBILITY_ADD') {
+        // Deactivate compatibilities created by this operation
+        const updateResult = await tx.productCompatibility.updateMany({
+          where: {
+            operationId: operationId,
+            isActive: true,
+          },
+          data: {
+            isActive: false,
+            deactivatedAt: abandonTimestamp,
+            deactivatedBy: abandonedBy,
+          },
+        });
+        affectedCount = updateResult.count;
+      } else if (opType === 'SUPPLIER_CREATE') {
+        // For supplier creation, ensure there are no active products referencing this supplier.
+        // Prefer entityId (supplier id) attached to the operation, but fall back to metadata/payloadSnapshot if needed.
+        const supplierId = (operation as any).entityId;
+        let supplierName: string | null = null;
+
+        if (supplierId) {
+          const supplier = await tx.supplier.findUnique({ where: { id: supplierId } });
+          if (supplier) supplierName = supplier.name;
+        }
+
+        // If supplierName still unknown, try metadata or payloadSnapshot
+        if (!supplierName) {
+          try {
+            const meta = operation.metadata ? JSON.parse(operation.metadata as any) : null;
+            if (meta && meta.supplierName) supplierName = meta.supplierName;
+            else {
+              const payload = operation.payloadSnapshot ? JSON.parse(operation.payloadSnapshot as any) : null;
+              if (payload && payload.name) supplierName = payload.name;
+            }
+          } catch (err) {
+            // ignore parse errors
+          }
+        }
+
+        if (!supplierName) {
+          throw new Error('Cannot determine supplier name for abandon validation');
+        }
+
+        // Count active PriceEntry rows that reference this supplier name (case-insensitive match)
+        const relatedProductsCount = await tx.priceEntry.count({
+          where: {
+            supplierName: { equals: supplierName },
+            isActive: true,
+          } as any,
+        });
+
+        if (relatedProductsCount > 0) {
+          throw new Error('Impossible d\'abandonner: des produits sont liés à ce fournisseur');
+        }
+
+        // Safe to delete supplier (contacts cascade)
+        if (supplierId) {
+          await tx.supplier.delete({ where: { id: supplierId } });
+          affectedCount = 1;
+        } else {
+          // Try to delete by name if supplierId unavailable
+          const deleted = await tx.supplier.deleteMany({ where: { name: supplierName } });
+          affectedCount = deleted.count;
+        }
+      } else {
+        // Fallback: try to soft-delete price entries by operationId as best-effort
+        const updateResult = await tx.priceEntry.updateMany({
+          where: { operationId },
+          data: { isActive: false, abandonedAt: abandonTimestamp },
+        });
+        affectedCount = updateResult.count;
+      }
+
       // 2. Update the operation status to ABANDONED
       await tx.operationLog.update({
         where: { id: operationId },
         data: {
           status: 'ABANDONED',
+          legacyStatus: 'ABANDONED',
           abandonedAt: abandonTimestamp,
           abandonedBy: abandonedBy,
         },
       });
-      
+
       // 3. Create an ABANDON_EVENT for the audit trail
-      //    This records WHO abandoned WHAT and WHEN
       const abandonEventId = uuidv4();
       await tx.operationLog.create({
         data: {
           id: abandonEventId,
-          type: 'BULK_DELETE', // BULK_DELETE type represents the abandon action
-          status: 'COMPLETED',
+          operationType: 'BULK_DELETE',
+          type: 'BULK_DELETE',
+          status: 'ABANDONED',
+          legacyStatus: 'COMPLETED',
           completedAt: abandonTimestamp,
-          rowCount: updateResult.count,
+          rowCount: affectedCount,
           createdBy: abandonedBy,
           description: `Abandoned operation: ${operation.description || operation.type}`,
           abandonedOperationId: operationId,
@@ -341,11 +432,17 @@ export async function abandonOperation(options: AbandonOperationOptions): Promis
             reason: reason || 'User initiated',
             originalRowCount: operation.rowCount,
           }),
+          payloadSnapshot: JSON.stringify({
+            abandonedOperationType: operation.type,
+            reason: reason || 'User initiated',
+            originalRowCount: operation.rowCount,
+          }),
+          revertOperationId: operationId,
         },
       });
-      
+
       return {
-        affectedRowCount: updateResult.count,
+        affectedRowCount: affectedCount,
         abandonEventId,
       };
     });
@@ -410,8 +507,8 @@ export async function getOperations(
   // Parse metadata JSON for each operation
   const displayData: OperationLogDisplay[] = data.map((op) => ({
     ...op,
-    type: op.type as OperationType,
-    status: op.status as OperationStatus,
+    type: (op.type ?? op.operationType) as OperationType,
+    status: (op.legacyStatus ?? op.status) as OperationStatus,
     metadata: op.metadata ? JSON.parse(op.metadata) : null,
   }));
   
@@ -440,8 +537,8 @@ export async function getOperationById(operationId: string): Promise<OperationLo
   
   return {
     ...operation,
-    type: operation.type as OperationType,
-    status: operation.status as OperationStatus,
+    type: (operation.type ?? operation.operationType) as OperationType,
+    status: (operation.legacyStatus ?? operation.status) as OperationStatus,
     metadata: operation.metadata ? JSON.parse(operation.metadata) : null,
   };
 }
@@ -452,16 +549,28 @@ export async function getOperationById(operationId: string): Promise<OperationLo
  */
 export async function getOperationsByStatus(status: OperationStatus): Promise<OperationLogDisplay[]> {
   const db = getPrisma();
-  
-  const data = await db.operationLog.findMany({
-    where: { status },
-    orderBy: { createdAt: 'desc' },
-  });
-  
+  // Prefer canonical `status` where available. Some databases may still
+  // be on an older schema that used `legacyStatus`. Try the canonical
+  // query first and fall back to legacy-only query if Prisma errors
+  // because the older column is missing.
+  let data: any[];
+  try {
+    data = await db.operationLog.findMany({
+      where: { status },
+      orderBy: { createdAt: 'desc' },
+    });
+  } catch (err) {
+    // Fallback for older DBs that don't expose `status`
+    data = await db.operationLog.findMany({
+      where: { legacyStatus: status },
+      orderBy: { createdAt: 'desc' },
+    } as any);
+  }
+
   return data.map((op) => ({
     ...op,
-    type: op.type as OperationType,
-    status: op.status as OperationStatus,
+    type: (op.type ?? op.operationType) as OperationType,
+    status: (op.legacyStatus ?? op.status) as OperationStatus,
     metadata: op.metadata ? JSON.parse(op.metadata) : null,
   }));
 }
@@ -480,18 +589,41 @@ export async function getOperationsByStatus(status: OperationStatus): Promise<Op
  */
 export async function findIncompleteOperations(): Promise<IncompleteOperation[]> {
   const db = getPrisma();
-  
-  const pendingOps = await db.operationLog.findMany({
-    where: { status: 'PENDING' },
-    orderBy: { createdAt: 'desc' },
-    select: {
-      id: true,
-      type: true,
-      rowCount: true,
-      createdAt: true,
-      description: true,
-    },
-  });
+  // Some databases will have `status` (canonical) while older schemas
+  // only have `legacyStatus`. Prefer querying `status` and fall back to
+  // `legacyStatus` if the column is absent (Prisma will throw in that case).
+  let pendingOps: Array<{
+    id: string;
+    type: string | null;
+    rowCount: number | null;
+    createdAt: Date | null;
+    description: string | null;
+  }>;
+  try {
+    pendingOps = await db.operationLog.findMany({
+      where: { status: 'PENDING' },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        type: true,
+        rowCount: true,
+        createdAt: true,
+        description: true,
+      },
+    });
+  } catch (err) {
+    pendingOps = await db.operationLog.findMany({
+      where: { legacyStatus: 'PENDING' },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        type: true,
+        rowCount: true,
+        createdAt: true,
+        description: true,
+      },
+    } as any);
+  }
   
   // For each pending operation, count actual related records
   const withActualCounts = await Promise.all(
@@ -510,7 +642,7 @@ export async function findIncompleteOperations(): Promise<IncompleteOperation[]>
     })
   );
   
-  return withActualCounts;
+  return withActualCounts as IncompleteOperation[];
 }
 
 /**
@@ -519,11 +651,13 @@ export async function findIncompleteOperations(): Promise<IncompleteOperation[]>
  */
 export async function finalizePendingOperation(operationId: string): Promise<boolean> {
   const db = getPrisma();
-  
+  // Select only the minimal canonical fields to avoid hitting missing
+  // legacy columns on older database schemas.
   const operation = await db.operationLog.findUnique({
     where: { id: operationId },
-  });
-  
+    select: { id: true, status: true },
+  } as any);
+
   if (!operation || operation.status !== 'PENDING') {
     return false;
   }
@@ -549,13 +683,14 @@ export async function finalizePendingOperation(operationId: string): Promise<boo
  * Abandon a pending operation.
  * Marks both the operation and its related records as abandoned.
  */
-export async function abandonPendingOperation(operationId: string, reason?: string): Promise<AbandonOperationResult> {
+export async function abandonPendingOperation(operationId: string, _reason?: string): Promise<AbandonOperationResult> {
   const db = getPrisma();
-  
+  // Fetch minimal fields to avoid selecting non-existent legacy columns.
   const operation = await db.operationLog.findUnique({
     where: { id: operationId },
-  });
-  
+    select: { id: true, status: true },
+  } as any);
+
   if (!operation) {
     return {
       success: false,
@@ -564,7 +699,7 @@ export async function abandonPendingOperation(operationId: string, reason?: stri
       error: 'Operation not found',
     };
   }
-  
+
   if (operation.status !== 'PENDING') {
     return {
       success: false,
@@ -576,6 +711,8 @@ export async function abandonPendingOperation(operationId: string, reason?: stri
   
   const abandonTimestamp = new Date();
   
+  // Safety: ensure operation has payload snapshot before abandoning
+  assertOperationHasPayload(operation, operationId);
   try {
     const result = await db.$transaction(async (tx) => {
       // Mark related entries as inactive

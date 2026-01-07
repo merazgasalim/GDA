@@ -17,11 +17,10 @@
  * - Variable column counts (missing columns = null)
  */
 
-import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs/promises';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
-import {
+import type {
   CreatePriceEntry,
   ImportPreview,
   ImportError,
@@ -32,17 +31,14 @@ import {
   CSVImportConfig,
   CSVImportResult,
   CSVImportPreview,
-  CSVValidationError,
   CSVFileReadResult,
   DuplicateAnalysisResult,
   DuplicateInfo,
   IntraCsvDuplicate,
-  DuplicateStrategy,
 } from '../../shared/types';
-import { 
-  createEntriesBatch, 
-  getImportHistory, 
-  createEntriesBatchWithOperation, 
+import {
+  getImportHistory,
+  createEntriesBatchWithOperation,
   getDistinctValues,
   findDuplicateReferences,
   deactivateAndInsertEntries,
@@ -57,7 +53,6 @@ import { listSuppliers } from './supplier-service';
 import {
   parseCSVContent,
   validateCSVMapping,
-  parsePrice as parsePriceFromCSV,
   suggestColumnMapping,
   createDefaultMapping as createCSVDefaultMapping,
 } from './csv-parser';

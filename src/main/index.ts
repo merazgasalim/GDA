@@ -115,6 +115,9 @@ async function createWindow(): Promise<void> {
 app.whenReady().then(async () => {
   // Validate license first
   const licenseStatus = await validateLicense();
+  if (!licenseStatus?.isValid) {
+    console.warn('License status invalid or missing:', licenseStatus);
+  }
 
   // Initialize database
   const dbResult = await initializeDatabase();

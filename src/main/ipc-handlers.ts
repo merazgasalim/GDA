@@ -65,10 +65,12 @@ import {
   createSupplier,
   listSuppliers,
   getSupplierById,
+  updateSupplier,
   deleteSupplier,
   validateSupplierInput,
   searchSuppliers,
   getSupplierPhonesByName,
+  getActiveProductsCountBySupplierName,
 } from './services/supplier-service';
 import {
   addCompatibility,
@@ -94,19 +96,7 @@ function sanitizeError(error: unknown): string {
   return 'An unexpected error occurred';
 }
 
-function wrapHandler<T>(
-  handler: () => Promise<T>
-): () => Promise<{ success: true; data: T } | { success: false; error: string }> {
-  return async () => {
-    try {
-      const data = await handler();
-      return { success: true, data };
-    } catch (error) {
-      console.error('IPC Handler Error:', error);
-      return { success: false, error: sanitizeError(error) };
-    }
-  };
-}
+// wrapper removed — handlers use explicit try/catch for clearer logging
 
 // ===========================================
 // REGISTER ALL HANDLERS
@@ -424,6 +414,27 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_UPDATE, async (_event, id: string, input) => {
+    try {
+      if (!id || typeof id !== 'string') {
+        throw new Error('Invalid supplier ID');
+      }
+      const validatedInput = CreateSupplierSchema.parse(input);
+      return await updateSupplier(id, validatedInput);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'ZodError') {
+        const zodError = error as any;
+        const messages = zodError.errors?.map((e: any) => `${e.path.join('.')}: ${e.message}`).join('; ') || 'Invalid input format';
+        console.error('[IPC] Zod validation error (update):', messages);
+        return {
+          success: false,
+          errors: [{ field: 'validation', message: messages }],
+        };
+      }
+      throw new Error(sanitizeError(error));
+    }
+  });
+
   ipcMain.handle(IPC_CHANNELS.SUPPLIER_GET_LIST, async (_event, params) => {
     try {
       return await listSuppliers(params || {});
@@ -480,6 +491,20 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
     } catch (error) {
       console.error('Error getting supplier phones:', error);
       return [];
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUPPLIER_COUNT_ACTIVE_PRODUCTS, async (_event, supplierName: string) => {
+    try {
+      if (!supplierName || typeof supplierName !== 'string') {
+        return 0;
+      }
+      // Calls service to count active PriceEntry rows for given supplier name
+      const count = await getActiveProductsCountBySupplierName(supplierName);
+      return count;
+    } catch (error) {
+      console.error('Error counting active products for supplier:', error);
+      return 0;
     }
   });
 

@@ -211,6 +211,7 @@ export const OperationsLogModal: React.FC = () => {
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
   const [abandoningOperation, setAbandoningOperation] = useState<OperationLogDisplay | null>(null);
+  const [supplierBlockMap, setSupplierBlockMap] = useState<Record<string, { blocked: boolean; count: number | null; checking: boolean; message?: string }>>({});
 
   const pageSize = 10;
 
@@ -236,6 +237,62 @@ export const OperationsLogModal: React.FC = () => {
       fetchOperations();
     }
   }, [isOpen, fetchOperations]);
+
+  // When operations load, check supplier constraints for SUPPLIER_CREATE ops
+  useEffect(() => {
+    const supplierOps = operations.filter((o) => o.type === 'SUPPLIER_CREATE' && o.status === 'COMPLETED');
+    if (supplierOps.length === 0) return;
+
+    supplierOps.forEach(async (op) => {
+      // Skip if already checked
+      if (supplierBlockMap[op.id]?.checking || supplierBlockMap[op.id]?.blocked !== undefined) return;
+
+      // Determine supplier name from metadata or description
+      const supplierName: string | undefined = (op.metadata && (op.metadata as any).supplierName) || undefined;
+
+      // If we don't have a supplier name, mark as checked but allow abandon (server will validate)
+      if (!supplierName) {
+        setSupplierBlockMap((m) => ({ ...m, [op.id]: { blocked: false, count: null, checking: false } }));
+        return;
+      }
+
+      setSupplierBlockMap((m) => ({ ...m, [op.id]: { blocked: false, count: null, checking: true } }));
+
+      try {
+        const apiAny = (window as any).electronApi?.supplier;
+        // Try known method names that may be implemented in preload/main
+        const candidateFns = [
+          'getProductsCountByName',
+          'countProductsBySupplierName',
+          'countActiveProductsBySupplierName',
+          'hasActiveProductsForSupplier',
+        ];
+
+        let count: number | null = null;
+        for (const fn of candidateFns) {
+          if (apiAny && typeof apiAny[fn] === 'function') {
+            // Some handlers may return boolean or number; normalize to number
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            const res = await apiAny[fn](supplierName);
+            if (typeof res === 'number') count = res;
+            else if (typeof res === 'boolean') count = res ? 1 : 0;
+            break;
+          }
+        }
+
+        // If no IPC present, leave unchecked (server will still validate on abandon)
+        if (count === null) {
+          setSupplierBlockMap((m) => ({ ...m, [op.id]: { blocked: false, count: null, checking: false, message: 'IPC non disponible' } }));
+          return;
+        }
+
+        setSupplierBlockMap((m) => ({ ...m, [op.id]: { blocked: count > 0, count, checking: false } }));
+      } catch (err) {
+        setSupplierBlockMap((m) => ({ ...m, [op.id]: { blocked: false, count: null, checking: false, message: err instanceof Error ? err.message : String(err) } }));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operations]);
 
   // Handle abandon operation
   const handleAbandon = async (reason: string) => {
@@ -335,7 +392,9 @@ export const OperationsLogModal: React.FC = () => {
                   <tbody>
                     {operations.map((op) => {
                       const statusBadge = getStatusBadge(op.status);
-                      const canAbandon = op.status === 'COMPLETED' && licenseStatus.isValid;
+                      const supplierInfo = supplierBlockMap[op.id];
+                      const isSupplierBlocked = op.type === 'SUPPLIER_CREATE' && supplierInfo?.blocked === true;
+                      const canAbandon = op.status === 'COMPLETED' && licenseStatus.isValid && !isSupplierBlocked;
                       
                       return (
                         <tr key={op.id} className="border-b border-gray-100 hover:bg-gray-50">
@@ -366,6 +425,10 @@ export const OperationsLogModal: React.FC = () => {
                               </button>
                             ) : op.status === 'COMPLETED' && !licenseStatus.isValid ? (
                               <span className="text-xs text-gray-400">Licence requise</span>
+                            ) : isSupplierBlocked ? (
+                              <span className="text-xs text-gray-400" title={supplierInfo?.count !== null ? `${supplierInfo.count} produit(s) liés` : supplierInfo?.message || 'Produits liés'}>
+                                Produits liés
+                              </span>
                             ) : (
                               <span className="text-xs text-gray-400">-</span>
                             )}

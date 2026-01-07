@@ -344,8 +344,6 @@ export async function getMachineIdForDisplay(): Promise<string> {
  * This ensures database is only readable with valid license on correct machine.
  */
 export async function deriveEncryptionKey(): Promise<string | null> {
-  const status = await getLicenseStatus();
-  
   // Even if license is expired, allow decryption for read-only access
   // But require that a license was previously activated
   const licenseKey = store.get('license');

@@ -39,8 +39,7 @@
 
 import { PrismaClient, Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
-import {
-  ProductCompatibility,
+import type {
   CreateCompatibility,
   CreateCompatibilityResult,
   RemoveCompatibilityResult,
@@ -51,6 +50,7 @@ import {
   CompatibilityRelationType,
 } from '../../shared/types';
 import { createOperation, completeOperation, failOperation } from './operation-service';
+import { assertOperationAttached } from '../../shared/operationService';
 
 // ===========================================
 // PRISMA CLIENT ACCESSOR
@@ -185,84 +185,85 @@ export async function addCompatibility(
     };
   }
   
-  let operationId: string | undefined;
-  
   try {
-    // Create operation log entry
-    operationId = await createOperation({
-      type: 'COMPATIBILITY_ADD',
-      description: `Ajout de compatibilité: ${input.sourceProductId} → ${input.targetType === 'INTERNAL' ? input.targetProductId : 'EXTERNAL'} (${input.relationType})`,
-      metadata: {
-        sourceProductId: input.sourceProductId,
-        targetType: input.targetType,
-        targetProductId: input.targetProductId ?? undefined,
-        externalReferenceId: input.externalReferenceId ?? undefined,
-        relationType: input.relationType,
-        note: input.note ?? undefined,
-      },
-      createdBy,
-    });
+    // Create operation and related rows in a single transaction for atomicity
+    const result = await db.$transaction(async (tx) => {
+      // create operation
+      const op = await tx.operationLog.create({ data: ({
+        operationType: 'COMPATIBILITY_ADD',
+        payloadSnapshot: JSON.stringify({
+          sourceProductId: input.sourceProductId,
+          targetType: input.targetType,
+          targetProductId: input.targetProductId ?? null,
+          externalReferenceId: input.externalReferenceId ?? null,
+          relationType: input.relationType,
+          note: input.note ?? null,
+        }),
+        status: 'APPLIED',
+        createdBy: createdBy,
+        type: 'COMPATIBILITY_ADD',
+        legacyStatus: 'PENDING',
+        metadata: JSON.stringify({ sourceProductId: input.sourceProductId }),
+        description: `Ajout de compatibilité: ${input.sourceProductId} → ${input.targetType === 'INTERNAL' ? input.targetProductId : 'EXTERNAL'} (${input.relationType})`,
+        rowCount: 0,
+      } as any) });
 
-    // If external target and no externalReferenceId provided, create or reuse external record
-    let externalId: string | null = null;
-    if (input.targetType === 'EXTERNAL') {
-      if (input.externalReferenceId) {
-        externalId = input.externalReferenceId;
-      } else if (input.externalReference) {
-        const normRef = input.externalReference.reference.trim().toUpperCase();
-        const normBrand = input.externalReference.brand.trim().toUpperCase();
-        const existingExt = await db.externalProductReference.findFirst({
-          where: { reference: normRef, brand: normBrand },
-        });
-        if (existingExt) {
-          externalId = existingExt.id;
-        } else {
-          const created = await db.externalProductReference.create({
-            data: {
+      let externalId: string | null = null;
+      if (input.targetType === 'EXTERNAL') {
+        if (input.externalReferenceId) {
+          externalId = input.externalReferenceId;
+        } else if (input.externalReference) {
+          const normRef = input.externalReference.reference.trim().toUpperCase();
+          const normBrand = input.externalReference.brand.trim().toUpperCase();
+          const existingExt = await tx.externalProductReference.findFirst({ where: { reference: normRef, brand: normBrand } });
+          if (existingExt) {
+            externalId = existingExt.id;
+          } else {
+            const created = await tx.externalProductReference.create({ data: ({
               id: uuidv4(),
               reference: normRef,
               designation: input.externalReference.designation.trim(),
               brand: normBrand,
               notes: input.externalReference.notes ?? null,
               createdBy,
-            },
-          });
-          externalId = created.id;
+              operationId: op.id,
+            } as any) });
+            externalId = created.id;
+          }
         }
       }
-    }
 
-    // Create compatibility record
-    const data: any = {
-      id: uuidv4(),
-      sourceProductId: input.sourceProductId,
-      targetType: input.targetType ?? 'INTERNAL',
-      relationType: input.relationType,
-      note: input.note ?? null,
-      isActive: true,
-      createdBy,
-      operationId,
-    };
+      const data: any = {
+        id: uuidv4(),
+        sourceProductId: input.sourceProductId,
+        targetType: input.targetType ?? 'INTERNAL',
+        relationType: input.relationType,
+        note: input.note ?? null,
+        isActive: true,
+        createdBy,
+        operationId: op.id,
+      };
 
+      if (typeof input.targetProductId === 'string' && input.targetProductId.length > 0 && input.targetType === 'INTERNAL') {
+        data.targetProductId = input.targetProductId;
+      }
+      if (externalId) data.externalReferenceId = externalId;
 
-    // Only include targetProductId if it is a non-empty string
-    if (typeof input.targetProductId === 'string' && input.targetProductId.length > 0 && input.targetType === 'INTERNAL') {
-      data.targetProductId = input.targetProductId;
-    } else if ('targetProductId' in data) {
-      delete data.targetProductId;
-    }
+      const createdCompat = await tx.productCompatibility.create({ data: (data as any) });
 
-    // Set externalReferenceId only when available
-    if (externalId) {
-      data.externalReferenceId = externalId;
-    }
+      // Runtime assertion: ensure created compatibility has operationId
+      assertOperationAttached(createdCompat);
 
-    const compatibility = await db.productCompatibility.create({ data });
+      // update operation.entityId to point to created compatibility
+      await tx.operationLog.update({ where: { id: op.id }, data: ({ entityId: createdCompat.id } as any) });
 
-    // Complete operation
-    await completeOperation({ operationId, rowCount: 1 });
+      return { opId: op.id, createdCompat };
+    });
 
-    // Normalize the returned compatibility object to match our shared `ProductCompatibility` type
+    // Complete operation after commit
+    await completeOperation({ operationId: result.opId, rowCount: 1 });
+
+    const compatibility = result.createdCompat;
     return {
       success: true,
       compatibility: {
@@ -280,17 +281,11 @@ export async function addCompatibility(
         deactivatedBy: compatibility.deactivatedBy ?? null,
         operationId: compatibility.operationId ?? null,
       },
-      operationId,
+      operationId: result.opId,
     };
   } catch (error) {
     console.error('[CompatibilityService] Failed to add compatibility:', error);
-    if (operationId) {
-      await failOperation(operationId, error instanceof Error ? error.message : 'Unknown error');
-    }
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Failed to add compatibility',
-    };
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to add compatibility' };
   }
 }
 

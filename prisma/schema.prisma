@@ -32,10 +32,11 @@ model PriceEntry {
   notes          String?
   importBatchId  String?
   createdAt      DateTime      @default(now())
+  createdBy      String        @default("local")
   /// Links this entry to the operation that created it.
   /// CRITICAL: Every new entry MUST have an operationId.
   /// Legacy entries (before this system) may have null operationId.
-  operationId    String?
+  operationId    String
   /// Whether this entry is currently active (visible in normal queries).
   /// false = entry was part of an abandoned operation
   /// Default true for backwards compatibility with existing data.
@@ -43,7 +44,7 @@ model PriceEntry {
   /// When this entry was marked as inactive (abandoned).
   /// null = entry is active and has never been abandoned
   abandonedAt    DateTime?
-  operation      OperationLog? @relation(fields: [operationId], references: [id])
+  operation      OperationLog  @relation(fields: [operationId], references: [id])
 
   @@index([reference])
   @@index([designation])
@@ -111,14 +112,15 @@ model Supplier {
   address   String   // Required, min 5 chars
   website   String?  // Optional, must be valid URL if present
   createdAt DateTime @default(now())
+  createdBy String   @default("local")
   updatedAt DateTime @updatedAt
   
   // Normalized contacts - NOT embedded JSON for queryability
   contacts  SupplierContact[]
   
   // Audit trail link
-  operationId String?
-  operation   OperationLog? @relation(fields: [operationId], references: [id])
+  operationId String
+  operation   OperationLog  @relation(fields: [operationId], references: [id])
 
   @@index([name])
   @@index([createdAt])
@@ -222,8 +224,8 @@ model ProductCompatibility {
   deactivatedBy    String?
   
   /// Link to the operation that created this relation
-  operationId      String?
-  operation        OperationLog? @relation(fields: [operationId], references: [id])
+  operationId      String
+  operation        OperationLog  @relation(fields: [operationId], references: [id])
 
   // Indexes for efficient querying
   @@index([sourceProductId])
@@ -254,6 +256,9 @@ model ExternalProductReference {
   isActive   Boolean  @default(true)
   deactivatedAt DateTime?
   deactivatedBy String?
+  // Link to operation that created this external reference (required)
+  operationId String
+  operation   OperationLog @relation(fields: [operationId], references: [id])
 
   // Back-reference for relations
   compatibilities ProductCompatibility[] @relation("ExternalCompatibilities")
@@ -280,25 +285,46 @@ model ExternalProductReference {
 /// may be updated (PENDING->COMPLETED, COMPLETED->ABANDONED).
 model OperationLog {
   id                   String       @id @default(uuid())
-  /// Operation type: IMPORT | MANUAL_ADD | BULK_EDIT | BULK_DELETE | SYSTEM_MIGRATE | SUPPLIER_CREATE | COMPATIBILITY_ADD | COMPATIBILITY_REMOVE
-  type                 String
-  /// Status: PENDING | COMPLETED | FAILED | ABANDONED
-  status               String       @default("PENDING")
+  /// Canonical operation type
+  operationType        String
+  /// Legacy operation type (kept for compatibility with existing code)
+  type                 String?
+  /// Entity type affected by this operation (PRODUCT|SUPPLIER|EXTERNAL_REFERENCE)
+  entityType           String?
+  /// ID of the primary entity affected by this operation
+  entityId             String?
+  /// Immutable full snapshot of the payload that caused this operation
+  /// Stored as a JSON string for SQLite compatibility
+  payloadSnapshot      String
+  /// Status: APPLIED | ABANDONED
+  status               String       @default("APPLIED")
+  /// Legacy status field for compatibility (PENDING|COMPLETED|FAILED|ABANDONED)
+  legacyStatus         String?      @default("COMPLETED")
+  /// Optional row count for operations (kept for compatibility)
   rowCount             Int          @default(0)
-  createdAt            DateTime     @default(now())
-  completedAt          DateTime?
-  abandonedAt          DateTime?
-  createdBy            String       @default("local")
-  abandonedBy          String?
+  /// Optional metadata (legacy)
   metadata             String?
   description          String?
+  completedAt          DateTime?
+  abandonedAt          DateTime?
+  abandonedBy          String?
   abandonedOperationId String?
+  createdAt            DateTime     @default(now())
+  createdBy            String       @default("system")
+  /// Optional link to a revert operation that deactivates / reverses this operation
+  revertOperationId    String?
+  revertOperation      OperationLog? @relation("RevertRelation", fields: [revertOperationId], references: [id])
+  /// Links back to domain rows - kept for convenience but canonical mapping is entityType/entityId
   priceEntries         PriceEntry[]
   suppliers            Supplier[]
   compatibilities      ProductCompatibility[]
+  externalReferences   ExternalProductReference[]
+  /// Reverse side of self-relation for revert operations
+  revertedOperations   OperationLog[]     @relation("RevertRelation")
 
   @@index([status])
+  @@index([operationType])
   @@index([type])
   @@index([createdAt])
-  @@index([abandonedOperationId])
+  @@index([revertOperationId])
 }

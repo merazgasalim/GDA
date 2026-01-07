@@ -404,14 +404,13 @@ export const EditSupplierModal: React.FC<EditSupplierModalProps> = ({
           })),
       };
       
-      // Delete old supplier first
-      await window.electronApi.supplier.delete(supplier.id);
-      
-      // Create new one with updated data
-      const result = await window.electronApi.supplier.create(payload);
+      // Update existing supplier in-place (preserve id)
+      const result = await window.electronApi.supplier.update(supplier.id, payload);
       
       if (result.success) {
         toast.success('Fournisseur mis à jour avec succès');
+        // Notify other parts of the UI that suppliers changed (so main grid can refresh)
+        try { window.dispatchEvent(new Event('supplier:changed')); } catch {}
         onSaved();
       } else {
         const errorMessages = result.errors

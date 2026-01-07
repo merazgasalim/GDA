@@ -314,6 +314,12 @@ export const AddCompatibilityModal: React.FC<AddCompatibilityModalProps> = ({
       
       if (result.success) {
         setSuccess(true);
+        // Notify other UI parts (e.g. DataGrid) to refresh compatibility counts
+        try {
+          window.dispatchEvent(new CustomEvent('compatibility:changed', { detail: { sourceProductId } }));
+        } catch (e) {
+          // ignore
+        }
         // Close modal after brief delay to show success
         setTimeout(() => {
           onClose(true);

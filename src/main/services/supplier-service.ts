@@ -56,7 +56,8 @@ import {
   normalizeEmail,
   normalizeUrl,
 } from '../../shared/validation';
-import { createOperation, completeOperation, failOperation } from './operation-service';
+import { completeOperation, failOperation } from './operation-service';
+import { assertOperationAttached } from '../../shared/operationService';
 
 // ===========================================
 // PRISMA CLIENT ACCESSOR
@@ -320,48 +321,40 @@ export async function createSupplier(
   // Step 2: Normalize
   const normalized = normalizeSupplierInput(input);
   
-  // Step 3: Create operation for audit trail
-  let operationId: string;
+  // Step 3/4: Create operation and supplier+contacts inside a single transaction
   try {
-    operationId = await createOperation({
-      type: 'SUPPLIER_CREATE',
-      description: `Create supplier: ${normalized.name}`,
-      metadata: {
-        supplierName: normalized.name,
-        // Store sanitized snapshot (no sensitive data)
-        snapshot: {
-          name: normalized.name,
-          address: normalized.address,
-          website: normalized.website,
-          phoneCount: normalized.phones.length,
-          emailCount: normalized.emails?.length || 0,
-        },
-      },
-      createdBy,
-    });
-  } catch (error) {
-    console.error('[SupplierService] Failed to create operation:', error);
-    return {
-      success: false,
-      errors: [{ field: 'system', message: 'Failed to initialize audit trail' }],
-    };
-  }
-  
-  try {
-    // Step 4: Create supplier and contacts in transaction
     const supplier = await db.$transaction(async (tx) => {
-      // Create supplier
-      const supplierId = uuidv4();
-      const createdSupplier = await tx.supplier.create({
+      // create operation inside transaction
+      const op = await tx.operationLog.create({
         data: {
-          id: supplierId,
-          name: normalized.name,
-          address: normalized.address,
-          website: normalized.website,
-          operationId,
+          operationType: 'SUPPLIER_CREATE',
+          payloadSnapshot: JSON.stringify({
+            name: normalized.name,
+            address: normalized.address,
+            website: normalized.website,
+            phoneCount: normalized.phones.length,
+            emailCount: normalized.emails?.length || 0,
+          }),
+          status: 'APPLIED',
+          createdBy: createdBy ?? 'local',
+          type: 'SUPPLIER_CREATE',
+          legacyStatus: 'PENDING',
+          metadata: JSON.stringify({ supplierName: normalized.name }),
+          description: `Create supplier: ${normalized.name}`,
+          rowCount: 0,
         },
       });
-      
+
+      // Create supplier
+      const supplierId = uuidv4();
+      await tx.supplier.create({ data: ({
+        id: supplierId,
+        name: normalized.name,
+        address: normalized.address,
+        website: normalized.website,
+        operationId: op.id,
+      } as any) });
+
       // Create phone contacts
       for (const phone of normalized.phones) {
         await tx.supplierContact.create({
@@ -369,14 +362,13 @@ export async function createSupplier(
             id: uuidv4(),
             supplierId,
             type: 'PHONE',
-            // Store channels as comma-separated string (e.g., "REGULAR,WHATSAPP")
             channel: phone.channels.join(','),
             value: phone.value,
             isPrimary: phone.isPrimary || false,
           },
         });
       }
-      
+
       // Create email contacts
       for (const email of (normalized.emails || [])) {
         await tx.supplierContact.create({
@@ -390,47 +382,35 @@ export async function createSupplier(
           },
         });
       }
-      
-      // Fetch complete supplier with contacts
-      const completeSupplier = await tx.supplier.findUnique({
-        where: { id: supplierId },
-        include: { contacts: true },
-      });
-      
+
+      // update operation entityId and return supplier
+      await tx.operationLog.update({ where: { id: op.id }, data: ({ entityId: supplierId } as any) });
+
+      const completeSupplier = await tx.supplier.findUnique({ where: { id: supplierId }, include: { contacts: true } });
       return completeSupplier;
     });
     
-    if (!supplier) {
-      throw new Error('Supplier creation returned null');
-    }
-    
-    // Step 5: Complete operation
-    await completeOperation({
-      operationId,
-      rowCount: 1 + supplier.contacts.length, // Supplier + contacts
-      metadata: {
-        supplierId: supplier.id,
-      },
-    });
-    
+    if (!supplier) throw new Error('Supplier creation returned null');
+
+    // Runtime assertion: ensure supplier has operationId attached
+    assertOperationAttached(supplier);
+
+    // Complete operation (legacy fields)
+    await completeOperation({ operationId: supplier.operationId as string, rowCount: 1 + supplier.contacts.length, metadata: { supplierId: supplier.id } });
+
     // Step 6: Return result
     return {
       success: true,
       supplier: mapPrismaSupplierToDto(supplier),
-      operationId,
+      operationId: supplier.operationId ?? null,
     };
   } catch (error) {
     // Mark operation as failed
-    await failOperation(operationId, error instanceof Error ? error.message : 'Unknown error');
+    // Best-effort: if we have operationId, mark as failed
+    if ((error as any)?.operationId) await failOperation((error as any).operationId, error instanceof Error ? error.message : 'Unknown error');
     
     console.error('[SupplierService] Supplier creation failed:', error);
-    return {
-      success: false,
-      errors: [{ 
-        field: 'system', 
-        message: error instanceof Error ? error.message : 'Supplier creation failed',
-      }],
-    };
+    return { success: false, errors: [{ field: 'system', message: error instanceof Error ? error.message : 'Supplier creation failed' }] };
   }
 }
 
@@ -451,6 +431,104 @@ export async function getSupplierById(id: string): Promise<Supplier | null> {
   if (!supplier) return null;
   
   return mapPrismaSupplierToDto(supplier);
+}
+
+/**
+ * Update an existing supplier and replace its contacts.
+ *
+ * This performs validation and normalization, then updates the supplier
+ * record and recreates its contacts inside a single transaction.
+ *
+ * @param id - Supplier UUID
+ * @param input - Updated supplier payload
+ */
+export async function updateSupplier(
+  id: string,
+  input: CreateSupplier
+): Promise<CreateSupplierResult> {
+  const db = getPrisma();
+
+  // Validation
+  const validationErrors = validateSupplierInput(input);
+  if (validationErrors.length > 0) {
+    return { success: false, errors: validationErrors };
+  }
+
+  // Normalize input
+  const normalized = normalizeSupplierInput(input);
+
+  try {
+    const supplier = await db.$transaction(async (tx) => {
+      // Ensure supplier exists
+      const existing = await tx.supplier.findUnique({ where: { id } });
+      if (!existing) {
+        // Return null outside transaction
+        throw new Error('Supplier not found');
+      }
+
+      // Update supplier basic fields
+      const oldName = existing.name;
+      await tx.supplier.update({ where: { id }, data: ({
+        name: normalized.name,
+        address: normalized.address,
+        website: normalized.website,
+      } as any) });
+
+      // Also update any PriceEntry rows that referenced the old supplier name
+      // so the main datagrid (which displays PriceEntry.supplierName) reflects the change.
+      await tx.priceEntry.updateMany({
+        where: { supplierName: oldName },
+        data: { supplierName: normalized.name },
+      });
+
+      // Delete all existing contacts and recreate from payload
+      await tx.supplierContact.deleteMany({ where: { supplierId: id } });
+
+      for (const phone of normalized.phones) {
+        await tx.supplierContact.create({
+          data: {
+            id: uuidv4(),
+            supplierId: id,
+            type: 'PHONE',
+            channel: phone.channels.join(','),
+            value: phone.value,
+            isPrimary: phone.isPrimary || false,
+          },
+        });
+      }
+
+      for (const email of (normalized.emails || [])) {
+        await tx.supplierContact.create({
+          data: {
+            id: uuidv4(),
+            supplierId: id,
+            type: 'EMAIL',
+            channel: null,
+            value: email.value,
+            isPrimary: email.isPrimary || false,
+          },
+        });
+      }
+
+      const complete = await tx.supplier.findUnique({ where: { id }, include: { contacts: true } });
+      return complete;
+    });
+
+    if (!supplier) {
+      return { success: false, errors: [{ field: 'system', message: 'Supplier update failed' }] };
+    }
+
+    return {
+      success: true,
+      supplier: mapPrismaSupplierToDto(supplier),
+    };
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      return { success: false, errors: [{ field: 'system', message: 'Supplier not found' }] };
+    }
+    console.error('[SupplierService] Supplier update failed:', error);
+    return { success: false, errors: [{ field: 'system', message: error instanceof Error ? error.message : 'Supplier update failed' }] };
+  }
 }
 
 /**
@@ -562,6 +640,25 @@ export async function getSupplierPhonesByName(
     isPrimary: contact.isPrimary,
     channels: contact.channel ? contact.channel.split(',') : null,
   }));
+}
+
+/**
+ * Count active PriceEntry rows that reference a given supplier name.
+ * Used by the UI to determine whether a supplier can be safely abandoned.
+ *
+ * @param supplierName - Supplier display name
+ * @returns Number of active products referencing this supplier
+ */
+export async function getActiveProductsCountBySupplierName(supplierName: string): Promise<number> {
+  const db = getPrisma();
+  if (!supplierName || supplierName.trim().length === 0) return 0;
+  const count = await db.priceEntry.count({
+    where: {
+      supplierName: supplierName,
+      isActive: true,
+    } as any,
+  });
+  return count;
 }
 
 /**

@@ -13,13 +13,12 @@
 
 import ExcelJS from 'exceljs';
 import { dialog, BrowserWindow } from 'electron';
-import path from 'path';
 import fs from 'fs';
 import {
   ExportOptions,
   ExportResult,
   PriceEntry,
-  ColumnFilter,
+  // ColumnFilter type unused here; keep in shared/types for external consumers
 } from '../../shared/types';
 import { getAllEntriesForExport } from './database-service';
 import { isFeatureAllowed, getLicenseStatus } from './license-service';

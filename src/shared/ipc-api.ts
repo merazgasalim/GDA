@@ -217,6 +217,11 @@ export interface SupplierApi {
    * Returns true if deleted, false if not found.
    */
   delete: (id: string) => Promise<boolean>;
+
+  /**
+   * Update an existing supplier by id.
+   */
+  update: (id: string, input: CreateSupplier) => Promise<CreateSupplierResult>;
   
   /**
    * Validate supplier input without persisting.
@@ -237,6 +242,11 @@ export interface SupplierApi {
    * Used to show additional phone numbers in the data grid.
    */
   getPhonesByName: (supplierName: string) => Promise<SupplierPhoneInfo[]>;
+  /**
+   * Count active products referencing a supplier by display name.
+   * Returns the number of active PriceEntry rows with matching supplierName.
+   */
+  countActiveProductsBySupplierName: (supplierName: string) => Promise<number>;
 }
 
 /**

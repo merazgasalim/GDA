@@ -29,6 +29,7 @@ const CHANNEL_LABELS: Record<PhoneChannel, string> = {
 
 export const SuppliersPage: React.FC = () => {
   const setCurrentPage = useAppStore((state) => state.setCurrentPage);
+  const refreshData = useAppStore((state) => state.refreshData);
   
   // Local state
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -76,7 +77,7 @@ export const SuppliersPage: React.FC = () => {
 
   useEffect(() => {
     fetchSuppliers();
-  }, [fetchSuppliers]);
+  }, [fetchSuppliers, refreshData]);
 
   // ===========================================
   // HANDLERS
@@ -116,6 +117,12 @@ export const SuppliersPage: React.FC = () => {
   const handleSupplierUpdated = useCallback(async () => {
     setEditingSupplier(null);
     await fetchSuppliers();
+    // Refresh main data grid so updated supplier names are reflected
+    try {
+      await refreshData();
+    } catch (err) {
+      console.error('[SuppliersPage] Failed to refresh main data after supplier update:', err);
+    }
   }, [fetchSuppliers]);
 
   // ===========================================

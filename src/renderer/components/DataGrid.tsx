@@ -283,27 +283,48 @@ export const DataGrid: React.FC = () => {
   // Compatibility counts for all visible products
   const [compatibilityCounts, setCompatibilityCounts] = useState<Record<string, number>>({});
 
-  // Fetch compatibility counts when entries change
-  useEffect(() => {
-    const fetchCompatibilityCounts = async () => {
-      if (entries.length === 0) {
-        setCompatibilityCounts({});
-        return;
-      }
-      
-      try {
-        const productIds = entries.map(entry => entry.id);
-        const counts = await window.electronApi.compatibility.getBulkCounts(productIds);
-        setCompatibilityCounts(counts);
-      } catch (err) {
-        console.error('Failed to fetch compatibility counts:', err);
-        // Don't show error to user, just silently fail
-        setCompatibilityCounts({});
-      }
-    };
-    
-    fetchCompatibilityCounts();
+  // Compatibility counts for all visible products
+  const fetchCompatibilityCounts = useCallback(async () => {
+    if (entries.length === 0) {
+      setCompatibilityCounts({});
+      return;
+    }
+
+    try {
+      const productIds = entries.map(entry => entry.id);
+      const counts = await window.electronApi.compatibility.getBulkCounts(productIds);
+      setCompatibilityCounts(counts);
+    } catch (err) {
+      console.error('Failed to fetch compatibility counts:', err);
+      // Don't show error to user, just silently fail
+      setCompatibilityCounts({});
+    }
   }, [entries]);
+
+  // Fetch when entries change
+  useEffect(() => {
+    fetchCompatibilityCounts();
+  }, [fetchCompatibilityCounts]);
+
+  // Listen for compatibility changes from other parts of the UI
+  useEffect(() => {
+    const handler = (_e: Event) => {
+      fetchCompatibilityCounts();
+    };
+
+    window.addEventListener('compatibility:changed', handler);
+    return () => window.removeEventListener('compatibility:changed', handler);
+  }, [fetchCompatibilityCounts]);
+
+  // Listen for supplier changes (rename/add) and refresh entries
+  useEffect(() => {
+    const handler = (_e: Event) => {
+      fetchEntries();
+    };
+
+    window.addEventListener('supplier:changed', handler);
+    return () => window.removeEventListener('supplier:changed', handler);
+  }, [fetchEntries]);
 
   // Handle supplier name click
   const handleSupplierClick = useCallback((supplierName: string) => {
