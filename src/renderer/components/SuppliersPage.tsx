@@ -90,6 +90,25 @@ export const SuppliersPage: React.FC = () => {
 
   const handleDelete = useCallback(async (id: string) => {
     try {
+      // Prevent deletion if there are active products referencing this supplier.
+      // Try to resolve supplier name from local state first to avoid extra roundtrip.
+      const local = suppliers.find(s => s.id === id);
+      let supplierName = local?.name;
+
+      if (!supplierName) {
+        // Fallback: fetch supplier by id from main process
+        const fetched = await window.electronApi.supplier.getById(id);
+        supplierName = fetched?.name;
+      }
+
+      if (supplierName) {
+        const activeCount = await window.electronApi.supplier.countActiveProductsBySupplierName(supplierName);
+        if (activeCount > 0) {
+          toast.error(`${activeCount} produit${activeCount > 1 ? 's' : ''} actif${activeCount > 1 ? 's' : ''} référencent ce fournisseur — suppression impossible`);
+          return;
+        }
+      }
+
       const success = await window.electronApi.supplier.delete(id);
       if (success) {
         toast.success('Fournisseur supprimé avec succès');
@@ -103,7 +122,7 @@ export const SuppliersPage: React.FC = () => {
     } finally {
       setDeleteConfirmId(null);
     }
-  }, [fetchSuppliers]);
+  }, [fetchSuppliers, suppliers]);
 
   const handleBackToMain = useCallback(() => {
     setCurrentPage('main');
