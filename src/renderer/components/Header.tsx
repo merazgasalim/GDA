@@ -4,7 +4,7 @@
  * Application header with search, import/export buttons, and license info.
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useAppStore, selectCanExport, selectCanImport, selectIsReadOnly, selectHasActiveFilters } from '../store';
 import { debounce } from 'lodash';
 
@@ -38,10 +38,24 @@ export const Header: React.FC = () => {
     [setGlobalSearch, fetchEntries]
   );
 
+  const searchRef = useRef<HTMLInputElement | null>(null);
+
+  // Ensure focus is preserved after debounced search completes
+  const wrappedDebouncedSearch = useCallback(
+    (value: string) => {
+      debouncedSearch(value);
+      // After debounce delay, restore focus to the input
+      setTimeout(() => {
+        try { searchRef.current?.focus(); } catch {}
+      }, 350);
+    },
+    [debouncedSearch]
+  );
+
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setLocalSearch(value);
-    debouncedSearch(value);
+    wrappedDebouncedSearch(value);
   };
 
   const handleClearSearch = () => {
@@ -52,6 +66,7 @@ export const Header: React.FC = () => {
 
   useEffect(() => {
     setLocalSearch(globalSearch);
+    return () => { debouncedSearch.cancel(); };
   }, [globalSearch]);
 
   return (
@@ -78,7 +93,8 @@ export const Header: React.FC = () => {
               placeholder="Rechercher (référence, désignation, marque, fournisseur...)"
               value={localSearch}
               onChange={handleSearchChange}
-              className="input pl-11 pr-10"
+              ref={(el) => { searchRef.current = el; }}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md pl-11 pr-10"
             />
             <svg
               className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none"

@@ -51,7 +51,7 @@ export const Footer: React.FC = () => {
         <div className="flex items-center gap-4">
           {/* Page Size Selector */}
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600">Par page:</label>
+            <label className="text-sm text-gray-600 whitespace-nowrap">Par page:</label>
             <select
               value={pageSize}
               onChange={(e) => setPageSize(Number(e.target.value))}
@@ -117,7 +117,7 @@ export const Footer: React.FC = () => {
                 }}
                 className="input py-1 px-2 text-sm w-16 text-center"
               />
-              <span className="text-sm text-gray-600">/ {totalPages || 1}</span>
+              <span className="text-sm text-gray-600 whitespace-nowrap ">/ {totalPages || 1}</span>
             </div>
 
             {/* Next Page */}

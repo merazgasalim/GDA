@@ -375,47 +375,281 @@ function buildWhereClause(
 
   // Apply column-specific filters
   if (filters && filters.length > 0) {
+    // Define column types to avoid applying string operators to non-string fields
+    const numericColumns = new Set(['price']);
+    const dateColumns = new Set(['entryDate', 'arrivageDate', 'abandonedAt', 'createdAt', 'deactivatedAt']);
+
+    const tryParseNumber = (v: string) => {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const tryParseDate = (v: string) => {
+      const out: { type: 'date' | 'month' | 'year' | 'dayMonth' | 'dayOnly' | null; date?: Date; start?: Date; end?: Date; day?: number; month?: number; year?: number } = { type: null };
+
+      const trimmed = v.trim();
+
+      // YYYY-MM-DD or YYYY/MM/DD or DD/MM/YYYY
+      // YYYY-MM or YYYY/MM
+      // YYYY
+      // MM/YYYY or M/YYYY
+      // DD/MM (day+month)
+      // DD (day only)
+
+      // Full ISO or RFC parse first
+      let d = Date.parse(trimmed);
+      if (Number.isFinite(d)) {
+        out.type = 'date';
+        out.date = new Date(d);
+        // start of day and end-of-next-day
+        const start = new Date(out.date.getFullYear(), out.date.getMonth(), out.date.getDate());
+        const end = new Date(start);
+        end.setDate(end.getDate() + 1);
+        out.start = start;
+        out.end = end;
+        return out;
+      }
+
+      // dd/mm/yyyy
+      let m = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (m) {
+        const day = parseInt(m[1], 10);
+        const mon = parseInt(m[2], 10) - 1;
+        const yr = parseInt(m[3], 10);
+        const start = new Date(yr, mon, day);
+        const end = new Date(start);
+        end.setDate(end.getDate() + 1);
+        out.type = 'date';
+        out.date = start;
+        out.start = start;
+        out.end = end;
+        return out;
+      }
+
+      // MM/YYYY or M/YYYY
+      m = trimmed.match(/^(\d{1,2})\/(\d{4})$/);
+      if (m) {
+        const mon = parseInt(m[1], 10) - 1;
+        const yr = parseInt(m[2], 10);
+        const start = new Date(yr, mon, 1);
+        const end = new Date(yr, mon + 1, 1);
+        out.type = 'month';
+        out.start = start;
+        out.end = end;
+        return out;
+      }
+
+      // YYYY-MM or YYYY/MM
+      m = trimmed.match(/^(\d{4})[-\/](\d{1,2})$/);
+      if (m) {
+        const yr = parseInt(m[1], 10);
+        const mon = parseInt(m[2], 10) - 1;
+        const start = new Date(yr, mon, 1);
+        const end = new Date(yr, mon + 1, 1);
+        out.type = 'month';
+        out.start = start;
+        out.end = end;
+        return out;
+      }
+
+      // YYYY
+      m = trimmed.match(/^(\d{4})$/);
+      if (m) {
+        const yr = parseInt(m[1], 10);
+        const start = new Date(yr, 0, 1);
+        const end = new Date(yr + 1, 0, 1);
+        out.type = 'year';
+        out.start = start;
+        out.end = end;
+        return out;
+      }
+
+      // DD/MM (day+month, no year)
+      m = trimmed.match(/^(\d{1,2})\/(\d{1,2})$/);
+      if (m) {
+        const day = parseInt(m[1], 10);
+        const mon = parseInt(m[2], 10);
+        out.type = 'dayMonth';
+        out.day = day;
+        out.month = mon;
+        return out;
+      }
+
+      // Single number: treat as day or month. If 1-31 -> dayOnly; if 1-12 -> month-only (prefer month)
+      m = trimmed.match(/^(\d{1,2})$/);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n >= 1 && n <= 12) {
+          out.type = 'month';
+          // Use current year as default for month searches
+          const now = new Date();
+          out.start = new Date(now.getFullYear(), n - 1, 1);
+          out.end = new Date(now.getFullYear(), n, 1);
+          out.month = n;
+          return out;
+        }
+        if (n >= 1 && n <= 31) {
+          out.type = 'dayOnly';
+          out.day = n;
+          return out;
+        }
+      }
+
+      return out;
+    };
+
     for (const filter of filters) {
       const { column, value, operator } = filter;
       
       if (!value) continue;
 
       const condition: Prisma.PriceEntryWhereInput = {};
-      
+
+      // Support JSON date-range payloads emitted by the UI: { from?: string, to?: string }
+      if (dateColumns.has(column) && typeof value === 'string' && value.trim().startsWith('{')) {
+        try {
+          const parsedRange = JSON.parse(value);
+          const from = parsedRange && parsedRange.from ? tryParseDate(parsedRange.from) : null;
+          const to = parsedRange && parsedRange.to ? tryParseDate(parsedRange.to) : null;
+
+          if (from && from.start && to && to.start) {
+            // Normalize: gte from.start, lt day after to.start (use to.end if available)
+            const endExclusive = to.end ?? new Date(to.start.getFullYear(), to.start.getMonth(), to.start.getDate() + 1);
+            conditions.push({ [column]: { gte: from.start, lt: endExclusive } } as any);
+            continue;
+          }
+
+          if (from && from.start && !to) {
+            conditions.push({ [column]: { gte: from.start } } as any);
+            continue;
+          }
+
+          if (!from && to && to.start) {
+            const endExclusive = to.end ?? new Date(to.start.getFullYear(), to.start.getMonth(), to.start.getDate() + 1);
+            conditions.push({ [column]: { lt: endExclusive } } as any);
+            continue;
+          }
+        } catch {
+          // fall through to normal handling if JSON invalid
+        }
+      }
+
       switch (operator) {
         case 'equals':
-          (condition as any)[column] = value;
+          if (numericColumns.has(column)) {
+            const num = tryParseNumber(value);
+            if (num === null) continue;
+            (condition as any)[column] = { equals: num };
+          } else if (dateColumns.has(column)) {
+            const dt = tryParseDate(value);
+            if (!dt) continue;
+            (condition as any)[column] = { equals: dt };
+          } else {
+            (condition as any)[column] = value;
+          }
           break;
         case 'contains':
-          // Multi-word search for reference and designation columns
-          if (column === 'reference' || column === 'designation') {
-            const searchWords = value.trim().split(/\s+/).filter(word => word.length > 0);
-            if (searchWords.length > 1) {
-              // Multiple words: ALL must be found in the same column
-              const wordConditions = searchWords.map(word => ({
-                [column]: { contains: word }
-              }));
-              conditions.push({ AND: wordConditions });
+          // Don't apply string 'contains' to numeric/date columns.
+          if (numericColumns.has(column)) {
+            const num = tryParseNumber(value);
+            if (num === null) continue;
+            (condition as any)[column] = { equals: num };
+            break;
+          }
+
+          if (dateColumns.has(column)) {
+            const parsed = tryParseDate(value);
+            if (!parsed.type) continue;
+            if (parsed.type === 'date' && parsed.start && parsed.end) {
+              (condition as any)[column] = { gte: parsed.start, lt: parsed.end };
+            } else if ((parsed.type === 'month' || parsed.type === 'year') && parsed.start && parsed.end) {
+              (condition as any)[column] = { gte: parsed.start, lt: parsed.end };
+            } else if (parsed.type === 'dayOnly' && parsed.day) {
+              // Expand to OR of reasonable year range
+              const now = new Date();
+              const minYear = Math.max(1970, now.getFullYear() - 25);
+              const maxYear = now.getFullYear() + 5;
+              const orConds: Prisma.PriceEntryWhereInput[] = [];
+              for (let y = minYear; y <= maxYear; y++) {
+                for (let mth = 0; mth < 12; mth++) {
+                  const start = new Date(y, mth, parsed.day);
+                  if (start.getDate() !== parsed.day) continue; // skip invalid dates (e.g., Feb 30)
+                  const end = new Date(start);
+                  end.setDate(end.getDate() + 1);
+                  orConds.push({ [column]: { gte: start, lt: end } } as any);
+                }
+              }
+              if (orConds.length === 0) continue;
+              conditions.push({ OR: orConds });
+              continue;
+            } else if (parsed.type === 'dayMonth' && parsed.day && parsed.month) {
+              // Expand across a range of years for that day-month combination
+              const now = new Date();
+              const minYear = Math.max(1970, now.getFullYear() - 25);
+              const maxYear = now.getFullYear() + 5;
+              const orConds: Prisma.PriceEntryWhereInput[] = [];
+              for (let y = minYear; y <= maxYear; y++) {
+                const start = new Date(y, parsed.month - 1, parsed.day);
+                if (start.getDate() !== parsed.day) continue;
+                const end = new Date(start);
+                end.setDate(end.getDate() + 1);
+                orConds.push({ [column]: { gte: start, lt: end } } as any);
+              }
+              if (orConds.length === 0) continue;
+              conditions.push({ OR: orConds });
+              continue;
+            } else {
               continue;
             }
+          } else {
+            // For text columns, if the user provided multiple space-separated words,
+            // require that ALL words are present in the same column (tokenized AND).
+            // This mirrors the globalSearch behavior which splits on whitespace and
+            // requires every token to be found somewhere.
+            const trimmed = String(value).trim();
+            const words = trimmed.split(/\s+/).filter(w => w.length > 0);
+
+            if (words.length > 1) {
+              // Build an AND of contains conditions for this column
+              const andConds: Prisma.PriceEntryWhereInput[] = words.map((w) => ({ [column]: { contains: w } } as any));
+              conditions.push({ AND: andConds });
+              continue;
+            }
+
+            // Single-word fallback: use contains to match anywhere in the field
+            (condition as any)[column] = { contains: trimmed };
           }
-          // Single word or other columns: normal contains search
-          (condition as any)[column] = { contains: value };
-          break;
-        case 'startsWith':
-          (condition as any)[column] = { startsWith: value };
-          break;
-        case 'endsWith':
-          (condition as any)[column] = { endsWith: value };
           break;
         case 'gt':
         case 'lt':
         case 'gte':
         case 'lte':
-          (condition as any)[column] = { [operator]: parseFloat(value) };
+          if (numericColumns.has(column)) {
+            const num = tryParseNumber(value);
+            if (num === null) continue;
+            (condition as any)[column] = { [operator]: num };
+          } else if (dateColumns.has(column)) {
+            const dt = tryParseDate(value);
+            if (!dt) continue;
+            (condition as any)[column] = { [operator]: dt };
+          } else {
+            // For string columns, use lexical comparison
+            (condition as any)[column] = { [operator]: value };
+          }
           break;
         default:
-          (condition as any)[column] = { contains: value };
+          // Fallback: avoid applying contains to numeric/date
+          if (numericColumns.has(column)) {
+            const num = tryParseNumber(value);
+            if (num === null) continue;
+            (condition as any)[column] = { equals: num };
+          } else if (dateColumns.has(column)) {
+            const dt = tryParseDate(value);
+            if (!dt) continue;
+            (condition as any)[column] = { equals: dt };
+          } else {
+            (condition as any)[column] = { contains: value };
+          }
       }
       
       conditions.push(condition);

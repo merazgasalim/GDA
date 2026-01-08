@@ -35,47 +35,215 @@ const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value
   const [localValue, setLocalValue] = useState(value);
   const [isFocused, setIsFocused] = useState(false);
   const fetchEntries = useAppStore((state) => state.fetchEntries);
-  
-  const debouncedUpdate = useCallback(
-    debounce((val: string) => {
-      onChange(val);
-      // Don't call fetchEntries here - let it happen from an effect watching the filters
-    }, 800),
-    [onChange]
-  );
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Date columns: show from/to inputs
+  const dateColumns = new Set(['entryDate', 'arrivageDate', 'abandonedAt', 'createdAt']);
+
+  const lastFocusedRef = useRef<HTMLInputElement | null>(null);
+  const lastFocusedColumnRef = useRef<string | null>(null);
+  const fromRef = useRef<HTMLInputElement | null>(null);
+  const toRef = useRef<HTMLInputElement | null>(null);
+  const textRef = useRef<HTMLInputElement | null>(null);
+
+  // Debug instrumentation: log mount/unmount
+  useEffect(() => {
+    try { console.log('[DBG] ColumnFilter mounted', _column.accessorKey); } catch {}
+    return () => { try { console.log('[DBG] ColumnFilter unmounted', _column.accessorKey); } catch {} };
+  }, [_column.accessorKey]);
+
+  // Stable debounced updater: store latest onChange in a ref and keep a single debounced fn
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+
+  const debouncedRef = useRef<any>(null);
+  if (!debouncedRef.current) {
+    debouncedRef.current = debounce((val: string) => {
+      try { onChangeRef.current(val); } catch {}
+      // Restore focus to the last-focused input after update. Use the column accessor
+      // to find the newly rendered input element (handles remounts). Use double
+      // requestAnimationFrame to ensure the DOM has been updated by React.
+      try {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          try {
+            const col = lastFocusedColumnRef.current;
+            console.log('[DBG] attempting focus restore for', col);
+            if (col) {
+              const el = document.querySelector(`input[data-filter-column="${col}"]`) as HTMLInputElement | null;
+              if (el) {
+                console.log('[DBG] focus restored to element for column', col);
+                el.focus();
+              }
+            } else {
+              if (lastFocusedRef.current) {
+                console.log('[DBG] focus restored to lastFocusedRef');
+                lastFocusedRef.current.focus();
+              }
+            }
+          } catch (err) { console.warn('[DBG] focus restore failed', err); }
+        }));
+      } catch (err) { console.warn('[DBG] focus restore outer failed', err); }
+      // Don't call fetchEntries here - let it happen from an effect watching the filters
+    }, 800);
+  }
+
+  // If column is date type, expect value to be JSON string { from?: 'YYYY-MM-DD', to?: 'YYYY-MM-DD' }
+  const isDateColumn = dateColumns.has(_column.accessorKey);
+
+  // Local state for date range
+  const [fromDate, setFromDate] = useState<string | undefined>(() => {
+    try {
+      const parsed = value ? JSON.parse(value) : null;
+      return parsed && parsed.from ? parsed.from : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  const [toDate, setToDate] = useState<string | undefined>(() => {
+    try {
+      const parsed = value ? JSON.parse(value) : null;
+      return parsed && parsed.to ? parsed.to : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+
+  useEffect(() => {
+    if (!isFocused) {
+      setLocalValue(value);
+      try {
+        const parsed = value ? JSON.parse(value) : null;
+        const parsedFrom = parsed && parsed.from ? parsed.from : undefined;
+        const parsedTo = parsed && parsed.to ? parsed.to : undefined;
+        // Only update local date state if it differs from current local values
+        if (parsed && (parsedFrom !== fromDate || parsedTo !== toDate)) {
+          setFromDate(parsedFrom);
+          setToDate(parsedTo);
+        }
+      } catch {
+        // Ignore invalid JSON and avoid clobbering local inputs
+      }
+    }
+  }, [value, isFocused, fromDate, toDate]);
+
+  const emitRange = (from?: string, to?: string) => {
+    // Only emit a date-range filter when both endpoints are provided.
+    if (from && to) {
+      const payload = JSON.stringify({ from, to });
+      debouncedRef.current(payload);
+    } else {
+      // Cancel any pending update; do not clear the filter yet (avoid partial clears)
+      debouncedRef.current.cancel?.();
+    }
+  };
+
+  const handleDateChange = (which: 'from' | 'to') => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value || undefined;
+    // Compute new values to avoid stale state in emitRange
+    const newFrom = which === 'from' ? v : fromDate;
+    const newTo = which === 'to' ? v : toDate;
+    if (which === 'from') setFromDate(v);
+    else setToDate(v);
+    emitRange(newFrom, newTo);
+  };
+
+  const handleTextChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setLocalValue(newValue);
-    debouncedUpdate(newValue);
+    const minChars = 2;
+    const trimmed = newValue.trim();
+    // Price field: only emit when input is a valid number (avoid partial '.' or ',')
+    if (_column.accessorKey === 'price') {
+      const parsed = Number(trimmed.replace(',', '.'));
+      if (trimmed === '') {
+        debouncedRef.current('');
+      } else if (!Number.isNaN(parsed)) {
+        debouncedRef.current(trimmed);
+      } else {
+        // don't emit for invalid/partial numeric input
+        debouncedRef.current.cancel?.();
+      }
+      return;
+    }
+
+    // For text fields, require a minimum length to avoid showing 'no results' on first keystrokes
+    if (trimmed === '') {
+      debouncedRef.current('');
+    } else if (trimmed.length >= minChars) {
+      debouncedRef.current(trimmed);
+    } else {
+      debouncedRef.current.cancel?.();
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     // Apply filter immediately on Enter
     if (e.key === 'Enter') {
-      debouncedUpdate.cancel();
-      onChange(localValue);
+      debouncedRef.current.cancel?.();
+      if (isDateColumn) {
+        if (fromDate && toDate) {
+          const payload = JSON.stringify({ from: fromDate, to: toDate });
+          onChange(payload);
+        } else {
+          // ensure no partial filter is sent
+          onChange('');
+        }
+      } else {
+        onChange(localValue);
+      }
       fetchEntries();
     }
-    
+
     // Prevent ALL keys from bubbling to parent handlers
     e.stopPropagation();
   };
 
-  const handleFocus = () => {
+  const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    try { console.log('[DBG] Filter focus', _column.accessorKey, (e.target as HTMLInputElement).value); } catch {}
     setIsFocused(true);
+    lastFocusedRef.current = e.target as HTMLInputElement;
+    lastFocusedColumnRef.current = _column.accessorKey;
+    // Store globally so parent can restore focus after data refreshes
+    try { (window as any).__lastFocusedFilterColumn = _column.accessorKey; } catch {}
   };
-
   const handleBlur = () => {
+    try { console.log('[DBG] Filter blur', _column.accessorKey, { fromDate, toDate, localValue }); } catch {}
+    // Flush any pending debounced update so store receives the latest range
+    // before we clear focus and potentially resync from props.
+    try { debouncedRef.current.flush?.(); } catch {}
     setIsFocused(false);
   };
 
-  useEffect(() => {
-    // Only sync from parent when not actively typing
-    if (!isFocused) {
-      setLocalValue(value);
-    }
-  }, [value, isFocused]);
+  if (isDateColumn) {
+    return (
+      <div className="flex gap-1 items-center">
+        <input
+          type="date"
+          className="column-filter-input"
+          value={fromDate || ''}
+          data-filter-column={_column.accessorKey}
+          onChange={handleDateChange('from')}
+          onKeyDown={handleKeyDown}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+          ref={(el) => { fromRef.current = el; }}
+          placeholder="From"
+        />
+        <span className="text-xs text-gray-400">—</span>
+        <input
+          type="date"
+          className="column-filter-input"
+          value={toDate || ''}
+          data-filter-column={_column.accessorKey}
+          onChange={handleDateChange('to')}
+          onKeyDown={handleKeyDown}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+          ref={(el) => { toRef.current = el; }}
+          placeholder="To"
+        />
+      </div>
+    );
+  }
 
   return (
     <input
@@ -83,10 +251,12 @@ const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value
       className="column-filter-input"
       placeholder={`Filtrer...`}
       value={localValue}
-      onChange={handleChange}
+      onChange={handleTextChange}
       onKeyDown={handleKeyDown}
-      onFocus={handleFocus}
+      onFocus={(e) => { handleFocus(e); textRef.current = e.target as HTMLInputElement; }}
       onBlur={handleBlur}
+      ref={(el) => { textRef.current = el; }}
+      data-filter-column={_column.accessorKey}
     />
   );
 };
@@ -268,7 +438,10 @@ export const DataGrid: React.FC = () => {
   const tableRef = useRef<HTMLTableElement>(null);
   
   // Auto-fetch when filters or sort changes
+  // Debug: log renders and when fetch is triggered
+  try { console.log('[DBG] DataGrid render', { entriesLength: entries.length, filterCols: columnFilters.map((f) => f.column) }); } catch {}
   useEffect(() => {
+    try { console.log('[DBG] fetch triggered by columnFilters/sort change', { columnFilters, sortColumn, sortDirection }); } catch {}
     fetchEntries();
   }, [columnFilters, sortColumn, sortDirection, fetchEntries]);
 
@@ -373,6 +546,25 @@ export const DataGrid: React.FC = () => {
 
   // Handle column filter change
   const handleFilterChange = (columnId: string, value: string) => {
+    // Only set filters when meaningful. Date-range JSON is accepted by the backend
+    // but the ColumnFilter operator enum doesn't include 'range', so we keep the
+    // operator as the default ('contains') and only send a value when valid.
+    try {
+      const parsed = value ? JSON.parse(value) : null;
+      if (parsed && (parsed.from || parsed.to)) {
+        // Only set when both endpoints are present; otherwise remove the filter
+        if (parsed.from && parsed.to) {
+          setColumnFilter({ column: columnId, value, operator: 'contains' });
+        } else {
+          // clear partial range
+          setColumnFilter({ column: columnId, value: '', operator: 'contains' });
+        }
+        return;
+      }
+    } catch {
+      // not JSON - fall through
+    }
+
     setColumnFilter({ column: columnId, value, operator: 'contains' });
     // fetchEntries is now called from within ColumnFilterInput after debounce
   };
@@ -399,13 +591,10 @@ export const DataGrid: React.FC = () => {
   };
 
   // Loading state
-  if (isLoading && entries.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="spinner w-8 h-8" />
-      </div>
-    );
-  }
+  // NOTE: avoid unmounting the table (and its filter inputs) during initial loading
+  // because that causes filter inputs to be unmounted/remounted and lose focus.
+  // We'll render the table header and filters always, and show a spinner in
+  // the table body when there are no entries and loading is in progress.
 
   // Error state
   if (error) {
@@ -433,7 +622,9 @@ export const DataGrid: React.FC = () => {
     const databaseIsEmpty = !stats || stats.totalEntries === 0;
     
     // Show import message only if database is truly empty
-    if (databaseIsEmpty && !hasFilters) {
+    // Do not show the import/empty-page when we're currently loading results;
+    // that would replace the table and unmount filters during a fetch.
+    if (!isLoading && databaseIsEmpty && !hasFilters) {
       return (
         <div className="empty-state">
           <svg className="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -490,15 +681,26 @@ export const DataGrid: React.FC = () => {
           </thead>
           <tbody>
             {entries.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} className="text-center py-8 text-gray-500">
-                  <svg className="w-12 h-12 mx-auto mb-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                  <p className="text-sm font-medium">Aucun résultat trouvé</p>
-                  <p className="text-xs text-gray-400 mt-1">Essayez de modifier vos filtres de recherche</p>
-                </td>
-              </tr>
+              // If we're currently loading, show a centered spinner inside the table
+              // instead of unmounting the header/filters. Otherwise show the no-results
+              // message.
+              (isLoading) ? (
+                <tr>
+                  <td colSpan={columns.length} className="text-center py-8 text-gray-500">
+                    <div className="spinner w-8 h-8 mx-auto" />
+                  </td>
+                </tr>
+              ) : (
+                <tr>
+                  <td colSpan={columns.length} className="text-center py-8 text-gray-500">
+                    <svg className="w-12 h-12 mx-auto mb-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <p className="text-sm font-medium">Aucun résultat trouvé</p>
+                    <p className="text-xs text-gray-400 mt-1">Essayez de modifier vos filtres de recherche</p>
+                  </td>
+                </tr>
+              )
             ) : (
               entries.map((entry, index) => (
                 <TableRow
@@ -520,8 +722,12 @@ export const DataGrid: React.FC = () => {
 
       {/* Loading Overlay */}
       {isLoading && entries.length > 0 && (
-        <div className="absolute inset-0 bg-white bg-opacity-50 flex items-center justify-center">
-          <div className="spinner w-8 h-8" />
+        <div
+          className="absolute inset-0 bg-white bg-opacity-50 flex items-center justify-center pointer-events-none"
+          aria-hidden="true"
+          tabIndex={-1}
+        >
+          <div className="spinner w-8 h-8" aria-hidden="true" tabIndex={-1} />
         </div>
       )}
 
