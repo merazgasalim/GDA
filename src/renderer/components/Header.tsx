@@ -28,6 +28,8 @@ export const Header: React.FC = () => {
   const licenseStatus = useAppStore((state) => state.licenseStatus);
   
   const [localSearch, setLocalSearch] = useState(globalSearch);
+  const includeCompatible = useAppStore((s) => (s as any).includeCompatible);
+  const setIncludeCompatible = useAppStore((s) => (s as any).setIncludeCompatible);
 
   // Debounced search
   const debouncedSearch = useCallback(
@@ -69,6 +71,20 @@ export const Header: React.FC = () => {
     return () => { debouncedSearch.cancel(); };
   }, [globalSearch]);
 
+  // Load persisted preference for including compatibles on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const value = await window.electronApi.settings.get('search.includeCompatible');
+        if (typeof value === 'boolean') {
+          await setIncludeCompatible(value);
+        }
+      } catch (err) {
+        // ignore and keep default
+      }
+    })();
+  }, [setIncludeCompatible]);
+
   return (
     <header className="bg-white border-b border-gray-200 px-6 py-4">
       <div className="flex items-center justify-between">
@@ -96,6 +112,16 @@ export const Header: React.FC = () => {
               ref={(el) => { searchRef.current = el; }}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md pl-11 pr-10"
             />
+            <div className="absolute left-3 -bottom-6 -translate-y-1/2 mt-10 flex items-center gap-2 text-xs text-gray-600">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={!!includeCompatible}
+                  onChange={(e) => setIncludeCompatible(Boolean(e.target.checked))}
+                />
+                <span>Inclure compatibles</span>
+              </label>
+            </div>
             <svg
               className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none"
               fill="none"

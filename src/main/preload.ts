@@ -121,6 +121,8 @@ const electronApi: ElectronApi = {
   compatibility: {
     getForProduct: (params: any) =>
       ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_GET_FOR_PRODUCT, params),
+    getForSources: (productIds: string[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_GET_FOR_SOURCES, productIds),
     
     add: (input: any) =>
       ipcRenderer.invoke(IPC_CHANNELS.COMPATIBILITY_ADD, input),

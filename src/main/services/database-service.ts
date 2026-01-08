@@ -570,9 +570,9 @@ function buildWhereClause(
               const minYear = Math.max(1970, now.getFullYear() - 25);
               const maxYear = now.getFullYear() + 5;
               const orConds: Prisma.PriceEntryWhereInput[] = [];
-              for (let y = minYear; y <= maxYear; y++) {
+                  for (let y = minYear; y <= maxYear; y++) {
                 for (let mth = 0; mth < 12; mth++) {
-                  const start = new Date(y, mth, parsed.day);
+                  const start: Date = new Date(y, mth, parsed.day);
                   if (start.getDate() !== parsed.day) continue; // skip invalid dates (e.g., Feb 30)
                   const end = new Date(start);
                   end.setDate(end.getDate() + 1);
@@ -589,7 +589,7 @@ function buildWhereClause(
               const maxYear = now.getFullYear() + 5;
               const orConds: Prisma.PriceEntryWhereInput[] = [];
               for (let y = minYear; y <= maxYear; y++) {
-                const start = new Date(y, parsed.month - 1, parsed.day);
+                const start: Date = new Date(y, parsed.month - 1, parsed.day);
                 if (start.getDate() !== parsed.day) continue;
                 const end = new Date(start);
                 end.setDate(end.getDate() + 1);

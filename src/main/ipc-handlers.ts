@@ -61,6 +61,7 @@ import {
   abandonPendingOperation,
   getOperationStats,
 } from './services/operation-service';
+import Store from 'electron-store';
 import {
   createSupplier,
   listSuppliers,
@@ -82,6 +83,7 @@ import {
   getBulkCompatibilityCounts,
   findExternalReferenceByReferenceAndBrand,
   convertExternalToInternal,
+  getCompatibilitiesForSources,
 } from './services/compatibility-service';
 
 // ===========================================
@@ -590,6 +592,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
     }
   });
 
+  // Get compatibilities for multiple source product IDs (used by search pipeline)
+  ipcMain.handle(IPC_CHANNELS.COMPATIBILITY_GET_FOR_SOURCES, async (_event, productIds: string[]) => {
+    try {
+      if (!Array.isArray(productIds)) throw new Error('productIds must be an array');
+      return await getCompatibilitiesForSources(productIds);
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
+
   // Find external reference by reference+brand (normalized)
   ipcMain.handle(IPC_CHANNELS.COMPATIBILITY_FIND_EXTERNAL, async (_event, reference: string, brand: string) => {
     try {
@@ -749,6 +761,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
   ipcMain.on(IPC_CHANNELS.APP_CLOSE, () => {
     mainWindow?.close();
   });
+
+  // ===========================================
+  // SETTINGS HANDLERS (electron-store)
+  // ===========================================
+  try {
+    const settingsStore = new Store({ name: 'settings' });
+
+    ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (_event, key: string) => {
+      try {
+        if (!key || typeof key !== 'string') return null;
+        return settingsStore.get(key);
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    });
+
+    ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async (_event, key: string, value: any) => {
+      try {
+        if (!key || typeof key !== 'string') return false;
+        settingsStore.set(key, value);
+        return true;
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    });
+
+    ipcMain.handle(IPC_CHANNELS.SETTINGS_GET_COLUMNS, async () => {
+      try {
+        return settingsStore.get('columns') || {};
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    });
+
+    ipcMain.handle(IPC_CHANNELS.SETTINGS_SET_COLUMNS, async (_event, columns: any) => {
+      try {
+        settingsStore.set('columns', columns);
+        return true;
+      } catch (error) {
+        throw new Error(sanitizeError(error));
+      }
+    });
+  } catch (err) {
+    console.error('Failed to initialize settings store handlers:', err);
+  }
 
   // ===========================================
   // DIALOG HANDLERS

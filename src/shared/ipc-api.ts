@@ -279,6 +279,11 @@ export interface CompatibilityApi {
    * @param params - Query parameters including productId
    */
   getForProduct: (params: CompatibilityQueryParams) => Promise<CompatibilityWithDetails[]>;
+  /**
+   * Get compatibilities for multiple source product IDs in a single call.
+   * Used by the UI to fetch compatible products for a list of direct results.
+   */
+  getForSources: (productIds: string[]) => Promise<CompatibilityWithDetails[]>;
   
   /**
    * Add a new compatibility relation between two products.

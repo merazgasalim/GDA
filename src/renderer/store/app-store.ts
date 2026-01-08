@@ -48,6 +48,8 @@ interface AppState {
   
   // UI State
   columns: ColumnConfig[];
+  /** Whether search should include compatible products (persisted) */
+  includeCompatible: boolean;
   selectedEntryId: string | null;
   isImportModalOpen: boolean;
   isLicenseModalOpen: boolean;
@@ -122,6 +124,8 @@ interface AppActions {
   
   // Suppliers
   refreshSuppliers: () => Promise<void>;
+  // Search preference
+  setIncludeCompatible: (include: boolean) => Promise<void>;
 }
 
 // ===========================================
@@ -163,6 +167,7 @@ const initialState: AppState = {
   isColumnSettingsOpen: false,
   isOperationsLogOpen: false,
   isAddSupplierModalOpen: false,
+  includeCompatible: true,
   
   // Operations Log - Crash Recovery
   hasIncompleteOperations: false,
@@ -376,6 +381,19 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
       });
     } catch (error) {
       console.error('Failed to fetch stats:', error);
+    }
+  },
+  // ===========================================
+  // SEARCH PREFERENCE
+  // ===========================================
+  setIncludeCompatible: async (include: boolean) => {
+    try {
+      set({ includeCompatible: include });
+      await window.electronApi.settings.set('search.includeCompatible', include);
+      // Refresh entries so UI respects new preference
+      get().fetchEntries();
+    } catch (err) {
+      console.error('Failed to persist includeCompatible setting:', err);
     }
   },
   

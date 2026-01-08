@@ -16,7 +16,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore, selectVisibleColumns } from '../store';
-import type { PriceEntry, ColumnConfig } from '../../shared/types';
+import type { PriceEntry, ColumnConfig, CompatibilityWithDetails } from '../../shared/types';
+import { COMPATIBILITY_RELATION_LABELS } from '../../shared/types';
 import { debounce } from 'lodash';
 import { SupplierInfoModal } from './SupplierInfoModal';
 import { ProductDetailModal } from './ProductDetailModal';
@@ -456,6 +457,11 @@ export const DataGrid: React.FC = () => {
   // Compatibility counts for all visible products
   const [compatibilityCounts, setCompatibilityCounts] = useState<Record<string, number>>({});
 
+  // Whether to include compatible products in the search results (from store)
+  const includeCompatible = useAppStore((s) => (s as any).includeCompatible);
+  // Compatible results fetched for the current visible direct results
+  const [compatibleResults, setCompatibleResults] = useState<any[]>([]);
+
   // Compatibility counts for all visible products
   const fetchCompatibilityCounts = useCallback(async () => {
     if (entries.length === 0) {
@@ -478,6 +484,38 @@ export const DataGrid: React.FC = () => {
   useEffect(() => {
     fetchCompatibilityCounts();
   }, [fetchCompatibilityCounts]);
+
+  // Fetch compatible results grouped by source for the visible direct results
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!includeCompatible) {
+        setCompatibleResults([]);
+        return;
+      }
+
+      if (!globalSearch || globalSearch.trim().length < 2) {
+        // Only fetch compatibles for meaningful search queries
+        setCompatibleResults([]);
+        return;
+      }
+
+      if (entries.length === 0) {
+        setCompatibleResults([]);
+        return;
+      }
+
+      try {
+        const ids = entries.map(e => e.id);
+        const results = await window.electronApi.compatibility.getForSources(ids);
+        if (!cancelled) setCompatibleResults(results || []);
+      } catch (err) {
+        console.error('Failed to fetch compatible results:', err);
+        if (!cancelled) setCompatibleResults([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [entries, includeCompatible, globalSearch]);
 
   // Listen for compatibility changes from other parts of the UI
   useEffect(() => {
@@ -719,6 +757,65 @@ export const DataGrid: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {/* Compatible Products Section (distinct from main table) */}
+      {includeCompatible && compatibleResults.length > 0 && (
+        <div className="mt-4 p-4 bg-gray-50 rounded-md border border-gray-100">
+          <div className="flex items-center mb-3">
+            <svg className="w-5 h-5 mr-2 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            <h3 className="font-semibold">Compatible Products</h3>
+          </div>
+
+          {/* Group by sourceProductId */}
+          {(() => {
+            const map = compatibleResults.reduce((m: Map<string, CompatibilityWithDetails[]>, item: CompatibilityWithDetails) => {
+              const key = item.sourceProductId;
+              if (!m.has(key)) m.set(key, [] as CompatibilityWithDetails[]);
+              m.get(key)!.push(item);
+              return m;
+            }, new Map<string, CompatibilityWithDetails[]>());
+            return (Array.from(map.entries()) as [string, CompatibilityWithDetails[]][]).map(([sourceId, items]) => (
+            <div key={sourceId} className="mb-4">
+              <div className="text-sm text-gray-500 mb-2">Compatible with: <button className="text-blue-600 hover:underline" onClick={(e) => { e.stopPropagation(); setSelectedEntry(sourceId); }}>{sourceId}</button></div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {items.map((it: CompatibilityWithDetails) => (
+                  <div
+                    key={it.id}
+                    className="p-3 rounded-md bg-white shadow-sm flex items-start gap-3 cursor-pointer"
+                    title={`Relation: ${it.relationType}. Source: ${it.sourceProductId}. Note: ${it.note ?? ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (it.targetType === 'INTERNAL' && it.targetProductId) {
+                        setSelectedEntry(it.targetProductId);
+                        setSelectedProductId(it.targetProductId);
+                        setProductDetailModalOpen(true);
+                      }
+                    }}
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium text-gray-900">{it.reference} {it.brand ? `- ${it.brand}` : ''}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-800 rounded-full">Compatible</span>
+                          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-800 rounded-full">{COMPATIBILITY_RELATION_LABELS[it.relationType] || it.relationType}</span>
+                        </div>
+                      </div>
+                      <div className="text-sm text-gray-500 mt-1">{it.designation}</div>
+                      <div className="text-xs text-gray-400 mt-1">{it.targetType === 'EXTERNAL' ? 'External reference — not stocked' : `Supplier: ${it.supplierName ?? '-'}`}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-mono">{it.targetType === 'EXTERNAL' ? '-' : (it.price != null ? Number(it.price).toFixed(2) : '-')}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ));
+            })()}
+        </div>
+      )}
 
       {/* Loading Overlay */}
       {isLoading && entries.length > 0 && (

@@ -797,6 +797,97 @@ export async function getBulkCompatibilityCounts(
 }
 
 /**
+ * Get compatibilities for multiple source product IDs in a single call.
+ * Used by the product search UI to fetch compatible products for a set
+ * of direct search results, following the SEARCH PIPELINE described
+ * in the UX specification.
+ *
+ * Returns an array of CompatibilityWithDetails for all outgoing
+ * relations where sourceProductId is in the provided productIds.
+ */
+export async function getCompatibilitiesForSources(
+  productIds: string[]
+): Promise<CompatibilityWithDetails[]> {
+  const db = getPrisma();
+
+  if (!productIds || productIds.length === 0) return [];
+
+  // Fetch active outgoing relations where sourceProductId is in productIds
+  const relations = await db.productCompatibility.findMany({
+    where: {
+      sourceProductId: { in: productIds },
+      isActive: true,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  // Collect internal product IDs and external reference IDs to resolve details
+  const internalIds = new Set<string>();
+  const externalIds = new Set<string>();
+  for (const r of relations) {
+    if ((r as any).targetType === 'EXTERNAL' && (r as any).externalReferenceId) {
+      externalIds.add((r as any).externalReferenceId);
+    } else if (r.targetProductId) {
+      internalIds.add(r.targetProductId);
+    }
+  }
+
+  const products = internalIds.size > 0
+    ? await db.priceEntry.findMany({ where: { id: { in: Array.from(internalIds) } } })
+    : [];
+  const externals = externalIds.size > 0
+    ? await db.externalProductReference.findMany({ where: { id: { in: Array.from(externalIds) } } })
+    : [];
+
+  const productMap = new Map(products.map(p => [p.id, p]));
+  const externalMap = new Map(externals.map(e => [e.id, e]));
+
+  // Resolve into CompatibilityWithDetails
+  const result: CompatibilityWithDetails[] = relations.map(rel => {
+    if ((rel as any).targetType === 'EXTERNAL' && (rel as any).externalReferenceId) {
+      const ext = externalMap.get((rel as any).externalReferenceId);
+      return {
+        id: rel.id,
+        relationType: rel.relationType as CompatibilityRelationType,
+        note: rel.note,
+        createdAt: rel.createdAt,
+        createdBy: rel.createdBy,
+        targetType: 'EXTERNAL',
+        reference: ext?.reference ?? 'N/A',
+        designation: ext?.designation ?? 'N/A',
+        brand: ext?.brand ?? 'N/A',
+        supplierName: 'N/A',
+        price: null,
+        sourceProductId: rel.sourceProductId,
+        targetProductId: null,
+        externalReferenceId: (rel as any).externalReferenceId,
+      };
+    }
+
+    const relatedProductId = rel.targetProductId;
+    const relatedProduct = relatedProductId ? productMap.get(relatedProductId) : undefined;
+
+    return {
+      id: rel.id,
+      relationType: rel.relationType as CompatibilityRelationType,
+      note: rel.note,
+      createdAt: rel.createdAt,
+      createdBy: rel.createdBy,
+      targetType: 'INTERNAL',
+      reference: relatedProduct?.reference ?? 'N/A',
+      designation: relatedProduct?.designation ?? 'N/A',
+      brand: relatedProduct?.brand ?? 'N/A',
+      supplierName: relatedProduct?.supplierName ?? 'N/A',
+      price: relatedProduct?.price ?? null,
+      sourceProductId: rel.sourceProductId,
+      targetProductId: rel.targetProductId,
+    };
+  });
+
+  return result;
+}
+
+/**
  * Find an external reference by normalized reference+brand (trim+upper).
  */
 export async function findExternalReferenceByReferenceAndBrand(

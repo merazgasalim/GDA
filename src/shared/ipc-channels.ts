@@ -75,6 +75,7 @@ export const IPC_CHANNELS = {
   COMPATIBILITY_REMOVE: 'compatibility:remove',
   COMPATIBILITY_SEARCH_PRODUCTS: 'compatibility:search-products',
   COMPATIBILITY_GET_SUMMARY: 'compatibility:get-summary',
+  COMPATIBILITY_GET_FOR_SOURCES: 'compatibility:get-for-sources',
   COMPATIBILITY_CHECK_EXISTS: 'compatibility:check-exists',
   COMPATIBILITY_GET_BULK_COUNTS: 'compatibility:get-bulk-counts',
   COMPATIBILITY_FIND_EXTERNAL: 'compatibility:find-external',
