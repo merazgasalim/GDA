@@ -49,11 +49,7 @@ function getDatabasePath(): string {
   if (dbUrl && dbUrl.startsWith('file:')) {
     return dbUrl.replace('file:', '').replace(/"/g, '');
   }
-  // In packaged apps we must use a writable location. Use the user's
-  // `userData` directory (under a `data` subfolder) so the installed app
-  // can create and write the SQLite file. Falling back to a bundled
-  // `prisma/dev.db` is problematic when app is packaged (asar/readonly).
-  return path.join(dbDir, 'dev.db');
+  return path.resolve(__dirname, '..', '..', '..', 'prisma', 'dev.db');
 }
 async function initializeDatabase(): Promise<{ success: boolean; error?: string }> {
   try {
@@ -75,39 +71,24 @@ async function initializeDatabase(): Promise<{ success: boolean; error?: string 
 
     // Open sqlite and initialize Drizzle
     const sqlite = new Database(dbPath);
-    // If an encryption key is available (SQLCipher), apply it so the database
-    // can be read. Without this the file appears as invalid SQL and prepares
-    // will fail with "no such column" or similar errors.
-    if (encryptionKey) {
-      try {
-        // eslint-disable-next-line no-console
-        console.error('[DatabaseService] applying encryption key to sqlite instance');
-        // Apply key for SQLCipher-enabled DBs
-        try {
-          // better-sqlite3 exposes pragma via the `pragma` method
-          (sqlite as any).pragma(`key = '${encryptionKey}'`);
-        } catch (pErr) {
-          // Some builds may not support `pragma` as a function; try running as a statement
-          try { sqlite.prepare(`PRAGMA key = '${encryptionKey}'`).run(); } catch (inner) { /* ignore */ }
-        }
-        // Attempt cipher migration in case DB was created with older cipher
-        try { (sqlite as any).pragma('cipher_migrate = 1'); } catch {}
-      } catch (e) {
-        console.error('[DatabaseService] failed to apply encryption key', e);
-      }
-    }
 
     // Create base tables if missing
     // eslint-disable-next-line no-console
     console.error('[DatabaseService] initializeDatabase: creating base tables at', dbPath);
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS ProductCompatibility (
       id TEXT PRIMARY KEY,
-      reference TEXT,
-      targetProductId TEXT,
+      sourceProductId TEXT,
       targetType TEXT NOT NULL DEFAULT 'INTERNAL',
+      targetProductId TEXT,
       externalReferenceId TEXT,
+      relationType TEXT,
+      note TEXT,
+      isActive INTEGER DEFAULT 1,
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updatedAt DATETIME
+      createdBy TEXT DEFAULT 'local',
+      deactivatedAt DATETIME,
+      deactivatedBy TEXT,
+      operationId TEXT
     )`).run();
 
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS PriceEntry (
@@ -118,6 +99,7 @@ async function initializeDatabase(): Promise<{ success: boolean; error?: string 
       supplierName TEXT,
       supplierPhone TEXT,
       price REAL,
+      currency TEXT NOT NULL DEFAULT 'DZD',
       entryDate DATETIME,
       arrivageDate DATETIME,
       importBatchId TEXT,
@@ -133,38 +115,56 @@ async function initializeDatabase(): Promise<{ success: boolean; error?: string 
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS OperationLog (
       id TEXT PRIMARY KEY,
       operationType TEXT,
+      entityType TEXT,
+      entityId TEXT,
       payloadSnapshot TEXT,
       status TEXT,
       createdBy TEXT,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
       type TEXT,
       legacyStatus TEXT,
       metadata TEXT,
       description TEXT,
       rowCount INTEGER DEFAULT 0,
-      entityId TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      completedAt DATETIME,
+      abandonedAt DATETIME,
+      abandonedBy TEXT,
+      revertOperationId TEXT,
+      abandonedOperationId TEXT
     )`).run();
 
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS Supplier (
       id TEXT PRIMARY KEY,
       name TEXT,
-      phone TEXT,
-      email TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      address TEXT,
+      website TEXT,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updatedAt DATETIME,
+      operationId TEXT
     )`).run();
 
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS SupplierContact (
       id TEXT PRIMARY KEY,
       supplierId TEXT,
-      name TEXT,
-      phone TEXT,
-      email TEXT
+      type TEXT,
+      channel TEXT,
+      value TEXT,
+      isPrimary INTEGER DEFAULT 0,
+      createdAt DATETIME
     )`).run();
 
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS ExternalProductReference (
       id TEXT PRIMARY KEY,
-      productId TEXT,
-      externalId TEXT
+      reference TEXT,
+      designation TEXT,
+      brand TEXT,
+      notes TEXT,
+      createdBy TEXT,
+      operationId TEXT,
+      isActive INTEGER DEFAULT 1,
+      createdAt DATETIME,
+      deactivatedAt DATETIME,
+      deactivatedBy TEXT
     )`).run();
 
     db = drizzle(sqlite, { schema });
@@ -206,6 +206,11 @@ async function initializeDatabase(): Promise<{ success: boolean; error?: string 
       // Ensure other ProductCompatibility columns expected by Drizzle schema
       if (!Array.isArray(tableInfo) || !tableInfo.some((col: any) => col.name === 'sourceProductId')) {
         sqlite.prepare(`ALTER TABLE "ProductCompatibility" ADD COLUMN "sourceProductId" TEXT`).run();
+      }
+      // Ensure operationId exists on ProductCompatibility to maintain operation linking
+      if (!Array.isArray(tableInfo) || !tableInfo.some((col: any) => col.name === 'operationId')) {
+        sqlite.prepare(`ALTER TABLE "ProductCompatibility" ADD COLUMN "operationId" TEXT`).run();
+        sqlite.prepare(`CREATE INDEX IF NOT EXISTS "ProductCompatibility_operationId_idx" ON "ProductCompatibility"("operationId")`).run();
       }
       if (!Array.isArray(tableInfo) || !tableInfo.some((col: any) => col.name === 'relationType')) {
         sqlite.prepare(`ALTER TABLE "ProductCompatibility" ADD COLUMN "relationType" TEXT`).run();

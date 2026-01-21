@@ -190,6 +190,30 @@ export async function addCompatibility(
       createdBy: createdBy,
     } as any;
 
+    // If caller provided externalReference object (new external), persist it and link
+    if (input.targetType === 'EXTERNAL' && !row.externalReferenceId && (input as any).externalReference) {
+      try {
+        const extId = uuidv4();
+        const extRow = {
+          id: extId,
+          reference: (input as any).externalReference.reference,
+          designation: (input as any).externalReference.designation ?? null,
+          brand: (input as any).externalReference.brand ?? null,
+          notes: (input as any).externalReference.notes ?? null,
+          createdBy: createdBy ?? 'system',
+          operationId,
+          isActive: true,
+          createdAt: new Date().toISOString(),
+        } as any;
+
+        await db.insert(externalProductReference).values(extRow).run();
+        row.externalReferenceId = extId;
+      } catch (err) {
+        console.error('[CompatibilityService] Failed to create external reference:', err);
+        // continue without throwing; compatibility insert will fail later if necessary
+      }
+    }
+
     await db.insert(productCompatibility).values(row).run();
 
     await completeOperation({ operationId, rowCount: 1 });
@@ -321,7 +345,20 @@ export async function getCompatibilitiesForProduct(
     relationType ? eq(productCompatibility.relationType, relationType) : undefined,
     !includeInactive ? eq(productCompatibility.isActive, true) : undefined
   );
-  const outgoingRelations = await db.select().from(productCompatibility).where(outgoingWhere).orderBy(desc(productCompatibility.createdAt)).all();
+  const outgoingRelations = await db.select({
+    id: productCompatibility.id,
+    sourceProductId: productCompatibility.sourceProductId,
+    targetType: productCompatibility.targetType,
+    targetProductId: productCompatibility.targetProductId,
+    externalReferenceId: productCompatibility.externalReferenceId,
+    relationType: productCompatibility.relationType,
+    note: productCompatibility.note,
+    isActive: productCompatibility.isActive,
+    createdAt: productCompatibility.createdAt,
+    createdBy: productCompatibility.createdBy,
+    deactivatedAt: productCompatibility.deactivatedAt,
+    deactivatedBy: productCompatibility.deactivatedBy,
+  }).from(productCompatibility).where(outgoingWhere).orderBy(desc(productCompatibility.createdAt)).all();
   
   // Query incoming relations if requested
   let incomingRelations: typeof outgoingRelations = [];
@@ -331,7 +368,20 @@ export async function getCompatibilitiesForProduct(
       relationType ? eq(productCompatibility.relationType, relationType) : undefined,
       !includeInactive ? eq(productCompatibility.isActive, true) : undefined
     );
-    incomingRelations = await db.select().from(productCompatibility).where(incomingWhere).orderBy(desc(productCompatibility.createdAt)).all();
+    incomingRelations = await db.select({
+      id: productCompatibility.id,
+      sourceProductId: productCompatibility.sourceProductId,
+      targetType: productCompatibility.targetType,
+      targetProductId: productCompatibility.targetProductId,
+      externalReferenceId: productCompatibility.externalReferenceId,
+      relationType: productCompatibility.relationType,
+      note: productCompatibility.note,
+      isActive: productCompatibility.isActive,
+      createdAt: productCompatibility.createdAt,
+      createdBy: productCompatibility.createdBy,
+      deactivatedAt: productCompatibility.deactivatedAt,
+      deactivatedBy: productCompatibility.deactivatedBy,
+    }).from(productCompatibility).where(incomingWhere).orderBy(desc(productCompatibility.createdAt)).all();
   }
   
   // Combine and resolve product details

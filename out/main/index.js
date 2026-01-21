@@ -36753,7 +36753,7 @@ function getDatabasePath() {
   if (dbUrl && dbUrl.startsWith("file:")) {
     return dbUrl.replace("file:", "").replace(/"/g, "");
   }
-  return path$m.join(dbDir, "dev.db");
+  return path$m.resolve(__dirname, "..", "..", "..", "prisma", "dev.db");
 }
 async function initializeDatabase() {
   try {
@@ -36766,34 +36766,21 @@ async function initializeDatabase() {
     const dbDir = path$m.dirname(dbPath);
     if (!require$$0$2.existsSync(dbDir)) require$$0$2.mkdirSync(dbDir, { recursive: true });
     const sqlite = new Client(dbPath);
-    if (encryptionKey) {
-      try {
-        console.error("[DatabaseService] applying encryption key to sqlite instance");
-        try {
-          sqlite.pragma(`key = '${encryptionKey}'`);
-        } catch (pErr) {
-          try {
-            sqlite.prepare(`PRAGMA key = '${encryptionKey}'`).run();
-          } catch (inner) {
-          }
-        }
-        try {
-          sqlite.pragma("cipher_migrate = 1");
-        } catch {
-        }
-      } catch (e) {
-        console.error("[DatabaseService] failed to apply encryption key", e);
-      }
-    }
     console.error("[DatabaseService] initializeDatabase: creating base tables at", dbPath);
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS ProductCompatibility (
       id TEXT PRIMARY KEY,
-      reference TEXT,
-      targetProductId TEXT,
+      sourceProductId TEXT,
       targetType TEXT NOT NULL DEFAULT 'INTERNAL',
+      targetProductId TEXT,
       externalReferenceId TEXT,
+      relationType TEXT,
+      note TEXT,
+      isActive INTEGER DEFAULT 1,
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updatedAt DATETIME
+      createdBy TEXT DEFAULT 'local',
+      deactivatedAt DATETIME,
+      deactivatedBy TEXT,
+      operationId TEXT
     )`).run();
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS PriceEntry (
       id TEXT PRIMARY KEY,
@@ -36803,6 +36790,7 @@ async function initializeDatabase() {
       supplierName TEXT,
       supplierPhone TEXT,
       price REAL,
+      currency TEXT NOT NULL DEFAULT 'DZD',
       entryDate DATETIME,
       arrivageDate DATETIME,
       importBatchId TEXT,
@@ -36817,35 +36805,53 @@ async function initializeDatabase() {
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS OperationLog (
       id TEXT PRIMARY KEY,
       operationType TEXT,
+      entityType TEXT,
+      entityId TEXT,
       payloadSnapshot TEXT,
       status TEXT,
       createdBy TEXT,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
       type TEXT,
       legacyStatus TEXT,
       metadata TEXT,
       description TEXT,
       rowCount INTEGER DEFAULT 0,
-      entityId TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      completedAt DATETIME,
+      abandonedAt DATETIME,
+      abandonedBy TEXT,
+      revertOperationId TEXT,
+      abandonedOperationId TEXT
     )`).run();
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS Supplier (
       id TEXT PRIMARY KEY,
       name TEXT,
-      phone TEXT,
-      email TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      address TEXT,
+      website TEXT,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updatedAt DATETIME,
+      operationId TEXT
     )`).run();
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS SupplierContact (
       id TEXT PRIMARY KEY,
       supplierId TEXT,
-      name TEXT,
-      phone TEXT,
-      email TEXT
+      type TEXT,
+      channel TEXT,
+      value TEXT,
+      isPrimary INTEGER DEFAULT 0,
+      createdAt DATETIME
     )`).run();
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS ExternalProductReference (
       id TEXT PRIMARY KEY,
-      productId TEXT,
-      externalId TEXT
+      reference TEXT,
+      designation TEXT,
+      brand TEXT,
+      notes TEXT,
+      createdBy TEXT,
+      operationId TEXT,
+      isActive INTEGER DEFAULT 1,
+      createdAt DATETIME,
+      deactivatedAt DATETIME,
+      deactivatedBy TEXT
     )`).run();
     db = drizzle(sqlite, { schema });
     try {
@@ -36882,6 +36888,10 @@ async function initializeDatabase() {
       }
       if (!Array.isArray(tableInfo) || !tableInfo.some((col) => col.name === "sourceProductId")) {
         sqlite.prepare(`ALTER TABLE "ProductCompatibility" ADD COLUMN "sourceProductId" TEXT`).run();
+      }
+      if (!Array.isArray(tableInfo) || !tableInfo.some((col) => col.name === "operationId")) {
+        sqlite.prepare(`ALTER TABLE "ProductCompatibility" ADD COLUMN "operationId" TEXT`).run();
+        sqlite.prepare(`CREATE INDEX IF NOT EXISTS "ProductCompatibility_operationId_idx" ON "ProductCompatibility"("operationId")`).run();
       }
       if (!Array.isArray(tableInfo) || !tableInfo.some((col) => col.name === "relationType")) {
         sqlite.prepare(`ALTER TABLE "ProductCompatibility" ADD COLUMN "relationType" TEXT`).run();
@@ -119626,6 +119636,26 @@ async function addCompatibility(input, createdBy = "local") {
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       createdBy
     };
+    if (input.targetType === "EXTERNAL" && !row2.externalReferenceId && input.externalReference) {
+      try {
+        const extId = v4$1();
+        const extRow = {
+          id: extId,
+          reference: input.externalReference.reference,
+          designation: input.externalReference.designation ?? null,
+          brand: input.externalReference.brand ?? null,
+          notes: input.externalReference.notes ?? null,
+          createdBy: createdBy ?? "system",
+          operationId,
+          isActive: true,
+          createdAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        await db$1.insert(externalProductReference).values(extRow).run();
+        row2.externalReferenceId = extId;
+      } catch (err2) {
+        console.error("[CompatibilityService] Failed to create external reference:", err2);
+      }
+    }
     await db$1.insert(productCompatibility).values(row2).run();
     await completeOperation({ operationId, rowCount: 1 });
     const compatibility = {
@@ -119693,7 +119723,20 @@ async function getCompatibilitiesForProduct(params) {
     relationType ? eq$7(productCompatibility.relationType, relationType) : void 0,
     !includeInactive ? eq$7(productCompatibility.isActive, true) : void 0
   );
-  const outgoingRelations = await db$1.select().from(productCompatibility).where(outgoingWhere).orderBy(desc(productCompatibility.createdAt)).all();
+  const outgoingRelations = await db$1.select({
+    id: productCompatibility.id,
+    sourceProductId: productCompatibility.sourceProductId,
+    targetType: productCompatibility.targetType,
+    targetProductId: productCompatibility.targetProductId,
+    externalReferenceId: productCompatibility.externalReferenceId,
+    relationType: productCompatibility.relationType,
+    note: productCompatibility.note,
+    isActive: productCompatibility.isActive,
+    createdAt: productCompatibility.createdAt,
+    createdBy: productCompatibility.createdBy,
+    deactivatedAt: productCompatibility.deactivatedAt,
+    deactivatedBy: productCompatibility.deactivatedBy
+  }).from(productCompatibility).where(outgoingWhere).orderBy(desc(productCompatibility.createdAt)).all();
   let incomingRelations = [];
   if (includeIncoming) {
     const incomingWhere = and(
@@ -119701,7 +119744,20 @@ async function getCompatibilitiesForProduct(params) {
       relationType ? eq$7(productCompatibility.relationType, relationType) : void 0,
       !includeInactive ? eq$7(productCompatibility.isActive, true) : void 0
     );
-    incomingRelations = await db$1.select().from(productCompatibility).where(incomingWhere).orderBy(desc(productCompatibility.createdAt)).all();
+    incomingRelations = await db$1.select({
+      id: productCompatibility.id,
+      sourceProductId: productCompatibility.sourceProductId,
+      targetType: productCompatibility.targetType,
+      targetProductId: productCompatibility.targetProductId,
+      externalReferenceId: productCompatibility.externalReferenceId,
+      relationType: productCompatibility.relationType,
+      note: productCompatibility.note,
+      isActive: productCompatibility.isActive,
+      createdAt: productCompatibility.createdAt,
+      createdBy: productCompatibility.createdBy,
+      deactivatedAt: productCompatibility.deactivatedAt,
+      deactivatedBy: productCompatibility.deactivatedBy
+    }).from(productCompatibility).where(incomingWhere).orderBy(desc(productCompatibility.createdAt)).all();
   }
   const allRelations = [...outgoingRelations, ...incomingRelations];
   const productIds = /* @__PURE__ */ new Set();
