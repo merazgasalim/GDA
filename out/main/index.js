@@ -36753,7 +36753,7 @@ function getDatabasePath() {
   if (dbUrl && dbUrl.startsWith("file:")) {
     return dbUrl.replace("file:", "").replace(/"/g, "");
   }
-  return path$m.resolve(__dirname, "..", "..", "..", "prisma", "dev.db");
+  return path$m.join(dbDir, "dev.db");
 }
 async function initializeDatabase() {
   try {
@@ -36766,6 +36766,25 @@ async function initializeDatabase() {
     const dbDir = path$m.dirname(dbPath);
     if (!require$$0$2.existsSync(dbDir)) require$$0$2.mkdirSync(dbDir, { recursive: true });
     const sqlite = new Client(dbPath);
+    if (encryptionKey) {
+      try {
+        console.error("[DatabaseService] applying encryption key to sqlite instance");
+        try {
+          sqlite.pragma(`key = '${encryptionKey}'`);
+        } catch (pErr) {
+          try {
+            sqlite.prepare(`PRAGMA key = '${encryptionKey}'`).run();
+          } catch (inner) {
+          }
+        }
+        try {
+          sqlite.pragma("cipher_migrate = 1");
+        } catch {
+        }
+      } catch (e) {
+        console.error("[DatabaseService] failed to apply encryption key", e);
+      }
+    }
     console.error("[DatabaseService] initializeDatabase: creating base tables at", dbPath);
     sqlite.prepare(`CREATE TABLE IF NOT EXISTS ProductCompatibility (
       id TEXT PRIMARY KEY,
@@ -36834,7 +36853,7 @@ async function initializeDatabase() {
     } catch (e) {
     }
     try {
-      const missingIdRows = sqlite.prepare('SELECT rowid FROM PriceEntry WHERE id IS NULL OR id = ""').all();
+      const missingIdRows = sqlite.prepare("SELECT rowid FROM PriceEntry WHERE id IS NULL OR id = ''").all();
       if (Array.isArray(missingIdRows) && missingIdRows.length > 0) {
         for (const r of missingIdRows) {
           const newId = require("crypto").randomUUID();

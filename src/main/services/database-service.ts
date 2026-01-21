@@ -49,7 +49,11 @@ function getDatabasePath(): string {
   if (dbUrl && dbUrl.startsWith('file:')) {
     return dbUrl.replace('file:', '').replace(/"/g, '');
   }
-  return path.resolve(__dirname, '..', '..', '..', 'prisma', 'dev.db');
+  // In packaged apps we must use a writable location. Use the user's
+  // `userData` directory (under a `data` subfolder) so the installed app
+  // can create and write the SQLite file. Falling back to a bundled
+  // `prisma/dev.db` is problematic when app is packaged (asar/readonly).
+  return path.join(dbDir, 'dev.db');
 }
 async function initializeDatabase(): Promise<{ success: boolean; error?: string }> {
   try {
@@ -71,6 +75,27 @@ async function initializeDatabase(): Promise<{ success: boolean; error?: string 
 
     // Open sqlite and initialize Drizzle
     const sqlite = new Database(dbPath);
+    // If an encryption key is available (SQLCipher), apply it so the database
+    // can be read. Without this the file appears as invalid SQL and prepares
+    // will fail with "no such column" or similar errors.
+    if (encryptionKey) {
+      try {
+        // eslint-disable-next-line no-console
+        console.error('[DatabaseService] applying encryption key to sqlite instance');
+        // Apply key for SQLCipher-enabled DBs
+        try {
+          // better-sqlite3 exposes pragma via the `pragma` method
+          (sqlite as any).pragma(`key = '${encryptionKey}'`);
+        } catch (pErr) {
+          // Some builds may not support `pragma` as a function; try running as a statement
+          try { sqlite.prepare(`PRAGMA key = '${encryptionKey}'`).run(); } catch (inner) { /* ignore */ }
+        }
+        // Attempt cipher migration in case DB was created with older cipher
+        try { (sqlite as any).pragma('cipher_migrate = 1'); } catch {}
+      } catch (e) {
+        console.error('[DatabaseService] failed to apply encryption key', e);
+      }
+    }
 
     // Create base tables if missing
     // eslint-disable-next-line no-console
@@ -148,7 +173,7 @@ async function initializeDatabase(): Promise<{ success: boolean; error?: string 
 
     // Migration fix: assign UUIDs to any existing PriceEntry rows missing an id
     try {
-      const missingIdRows: any[] = sqlite.prepare('SELECT rowid FROM PriceEntry WHERE id IS NULL OR id = ""').all();
+      const missingIdRows: any[] = sqlite.prepare("SELECT rowid FROM PriceEntry WHERE id IS NULL OR id = ''").all();
       if (Array.isArray(missingIdRows) && missingIdRows.length > 0) {
         for (const r of missingIdRows) {
           const newId = require('crypto').randomUUID();
