@@ -34,7 +34,9 @@
  * - Implementing DDD by Vaughn Vernon
  */
 
-import { PrismaClient, Prisma } from '@prisma/client';
+import { db } from '../../shared/drizzle';
+import { eq, and, or, inArray, like, asc, desc, sql } from 'drizzle-orm';
+import { supplier, supplierContact, priceEntry, operationLog } from '../../shared/schema';
 import { v4 as uuidv4 } from 'uuid';
 import {
   CreateSupplier,
@@ -63,25 +65,8 @@ import { assertOperationAttached } from '../../shared/operationService';
 // PRISMA CLIENT ACCESSOR
 // ===========================================
 
-let prismaClient: PrismaClient | null = null;
 
-/**
- * Set the Prisma client instance.
- * Called from database-service.ts during initialization.
- */
-export function setSupplierServicePrisma(client: PrismaClient): void {
-  prismaClient = client;
-}
-
-/**
- * Get the Prisma client, throwing if not initialized.
- */
-function getPrisma(): PrismaClient {
-  if (!prismaClient) {
-    throw new Error('Supplier service not initialized. Call setSupplierServicePrisma first.');
-  }
-  return prismaClient;
-}
+// Drizzle ORM is initialized in shared/drizzle.ts and imported as db
 
 // ===========================================
 // VALIDATION
@@ -307,7 +292,7 @@ export async function createSupplier(
   input: CreateSupplier,
   createdBy: string = 'local'
 ): Promise<CreateSupplierResult> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   // Step 1: Validate
   const validationErrors = validateSupplierInput(input);
@@ -323,92 +308,57 @@ export async function createSupplier(
   
   // Step 3/4: Create operation and supplier+contacts inside a single transaction
   try {
-    const supplier = await db.$transaction(async (tx) => {
+    const supplierResult = await db.transaction(async (tx: any) => {
       // create operation inside transaction
-      const op = await tx.operationLog.create({
-        data: {
-          operationType: 'SUPPLIER_CREATE',
-          payloadSnapshot: JSON.stringify({
-            name: normalized.name,
-            address: normalized.address,
-            website: normalized.website,
-            phoneCount: normalized.phones.length,
-            emailCount: normalized.emails?.length || 0,
-          }),
-          status: 'APPLIED',
-          createdBy: createdBy ?? 'local',
-          type: 'SUPPLIER_CREATE',
-          legacyStatus: 'PENDING',
-          metadata: JSON.stringify({ supplierName: normalized.name }),
-          description: `Create supplier: ${normalized.name}`,
-          rowCount: 0,
-        },
-      });
+      const opId = uuidv4();
+      await tx.insert(operationLog).values({
+        id: opId,
+        operationType: 'SUPPLIER_CREATE',
+        payloadSnapshot: JSON.stringify({
+          name: normalized.name,
+          address: normalized.address,
+          website: normalized.website,
+          phoneCount: normalized.phones.length,
+          emailCount: normalized.emails?.length || 0,
+        }),
+        status: 'APPLIED',
+        createdBy: createdBy ?? 'local',
+        type: 'SUPPLIER_CREATE',
+        legacyStatus: 'PENDING',
+        metadata: JSON.stringify({ supplierName: normalized.name }),
+        description: `Create supplier: ${normalized.name}`,
+        rowCount: 0,
+        createdAt: new Date().toISOString(),
+      }).run();
 
       // Create supplier
       const supplierId = uuidv4();
-      await tx.supplier.create({ data: ({
-        id: supplierId,
-        name: normalized.name,
-        address: normalized.address,
-        website: normalized.website,
-        operationId: op.id,
-      } as any) });
+      await tx.insert(supplier).values({ id: supplierId, name: normalized.name, address: normalized.address, website: normalized.website, operationId: opId, createdAt: new Date().toISOString() }).run();
 
-      // Create phone contacts
+      // Create contacts
       for (const phone of normalized.phones) {
-        await tx.supplierContact.create({
-          data: {
-            id: uuidv4(),
-            supplierId,
-            type: 'PHONE',
-            channel: phone.channels.join(','),
-            value: phone.value,
-            isPrimary: phone.isPrimary || false,
-          },
-        });
+        await tx.insert(supplierContact).values({ id: uuidv4(), supplierId, type: 'PHONE', channel: phone.channels.join(','), value: phone.value, isPrimary: phone.isPrimary || false, createdAt: new Date().toISOString() }).run();
       }
-
-      // Create email contacts
       for (const email of (normalized.emails || [])) {
-        await tx.supplierContact.create({
-          data: {
-            id: uuidv4(),
-            supplierId,
-            type: 'EMAIL',
-            channel: null,
-            value: email.value,
-            isPrimary: email.isPrimary || false,
-          },
-        });
+        await tx.insert(supplierContact).values({ id: uuidv4(), supplierId, type: 'EMAIL', channel: null, value: email.value, isPrimary: email.isPrimary || false, createdAt: new Date().toISOString() }).run();
       }
 
-      // update operation entityId and return supplier
-      await tx.operationLog.update({ where: { id: op.id }, data: ({ entityId: supplierId } as any) });
+      // update operation entityId
+      await tx.update(operationLog).set({ entityId: supplierId }).where(eq(operationLog.id, opId)).run();
 
-      const completeSupplier = await tx.supplier.findUnique({ where: { id: supplierId }, include: { contacts: true } });
-      return completeSupplier;
+      const sup = await tx.select().from(supplier).where(eq(supplier.id, supplierId)).get();
+      const contacts = await tx.select().from(supplierContact).where(eq(supplierContact.supplierId, supplierId)).all();
+      return { ...sup, contacts };
     });
-    
-    if (!supplier) throw new Error('Supplier creation returned null');
 
-    // Runtime assertion: ensure supplier has operationId attached
-    assertOperationAttached(supplier);
+    if (!supplierResult) throw new Error('Supplier creation returned null');
 
-    // Complete operation (legacy fields)
-    await completeOperation({ operationId: supplier.operationId as string, rowCount: 1 + supplier.contacts.length, metadata: { supplierId: supplier.id } });
+    assertOperationAttached(supplierResult);
+    await completeOperation({ operationId: supplierResult.operationId as string, rowCount: 1 + (supplierResult.contacts?.length ?? 0), metadata: { supplierId: supplierResult.id } });
 
-    // Step 6: Return result
-    return {
-      success: true,
-      supplier: mapPrismaSupplierToDto(supplier),
-      operationId: supplier.operationId ?? null,
-    };
+    return { success: true, supplier: mapPrismaSupplierToDto(supplierResult), operationId: supplierResult.operationId ?? null };
   } catch (error) {
-    // Mark operation as failed
-    // Best-effort: if we have operationId, mark as failed
     if ((error as any)?.operationId) await failOperation((error as any).operationId, error instanceof Error ? error.message : 'Unknown error');
-    
     console.error('[SupplierService] Supplier creation failed:', error);
     return { success: false, errors: [{ field: 'system', message: error instanceof Error ? error.message : 'Supplier creation failed' }] };
   }
@@ -421,16 +371,10 @@ export async function createSupplier(
  * @returns Supplier or null if not found
  */
 export async function getSupplierById(id: string): Promise<Supplier | null> {
-  const db = getPrisma();
-  
-  const supplier = await db.supplier.findUnique({
-    where: { id },
-    include: { contacts: true },
-  });
-  
-  if (!supplier) return null;
-  
-  return mapPrismaSupplierToDto(supplier);
+  const sup = await db.select().from(supplier).where(eq(supplier.id, id)).get();
+  if (!sup) return null;
+  const contacts = await db.select().from(supplierContact).where(eq(supplierContact.supplierId, id)).all();
+  return mapPrismaSupplierToDto({ ...sup, contacts });
 }
 
 /**
@@ -446,7 +390,7 @@ export async function updateSupplier(
   id: string,
   input: CreateSupplier
 ): Promise<CreateSupplierResult> {
-  const db = getPrisma();
+  // db is imported from Drizzle
 
   // Validation
   const validationErrors = validateSupplierInput(input);
@@ -458,74 +402,31 @@ export async function updateSupplier(
   const normalized = normalizeSupplierInput(input);
 
   try {
-    const supplier = await db.$transaction(async (tx) => {
-      // Ensure supplier exists
-      const existing = await tx.supplier.findUnique({ where: { id } });
-      if (!existing) {
-        // Return null outside transaction
-        throw new Error('Supplier not found');
-      }
-
-      // Update supplier basic fields
+    const supplierResult = await db.transaction(async (tx: any) => {
+      const existing = await tx.select().from(supplier).where(eq(supplier.id, id)).get();
+      if (!existing) throw new Error('Supplier not found');
       const oldName = existing.name;
-      await tx.supplier.update({ where: { id }, data: ({
-        name: normalized.name,
-        address: normalized.address,
-        website: normalized.website,
-      } as any) });
 
-      // Also update any PriceEntry rows that referenced the old supplier name
-      // so the main datagrid (which displays PriceEntry.supplierName) reflects the change.
-      await tx.priceEntry.updateMany({
-        where: { supplierName: oldName },
-        data: { supplierName: normalized.name },
-      });
+      await tx.update(supplier).set({ name: normalized.name, address: normalized.address, website: normalized.website }).where(eq(supplier.id, id)).run();
+      await tx.update(priceEntry).set({ supplierName: normalized.name }).where(eq(priceEntry.supplierName, oldName)).run();
 
-      // Delete all existing contacts and recreate from payload
-      await tx.supplierContact.deleteMany({ where: { supplierId: id } });
-
+      await tx.delete(supplierContact).where(eq(supplierContact.supplierId, id)).run();
       for (const phone of normalized.phones) {
-        await tx.supplierContact.create({
-          data: {
-            id: uuidv4(),
-            supplierId: id,
-            type: 'PHONE',
-            channel: phone.channels.join(','),
-            value: phone.value,
-            isPrimary: phone.isPrimary || false,
-          },
-        });
+        await tx.insert(supplierContact).values({ id: uuidv4(), supplierId: id, type: 'PHONE', channel: phone.channels.join(','), value: phone.value, isPrimary: phone.isPrimary || false, createdAt: new Date().toISOString() }).run();
       }
-
       for (const email of (normalized.emails || [])) {
-        await tx.supplierContact.create({
-          data: {
-            id: uuidv4(),
-            supplierId: id,
-            type: 'EMAIL',
-            channel: null,
-            value: email.value,
-            isPrimary: email.isPrimary || false,
-          },
-        });
+        await tx.insert(supplierContact).values({ id: uuidv4(), supplierId: id, type: 'EMAIL', channel: null, value: email.value, isPrimary: email.isPrimary || false, createdAt: new Date().toISOString() }).run();
       }
 
-      const complete = await tx.supplier.findUnique({ where: { id }, include: { contacts: true } });
-      return complete;
+      const sup = await tx.select().from(supplier).where(eq(supplier.id, id)).get();
+      const contacts = await tx.select().from(supplierContact).where(eq(supplierContact.supplierId, id)).all();
+      return { ...sup, contacts };
     });
 
-    if (!supplier) {
-      return { success: false, errors: [{ field: 'system', message: 'Supplier update failed' }] };
-    }
-
-    return {
-      success: true,
-      supplier: mapPrismaSupplierToDto(supplier),
-    };
+    if (!supplierResult) return { success: false, errors: [{ field: 'system', message: 'Supplier update failed' }] };
+    return { success: true, supplier: mapPrismaSupplierToDto(supplierResult) };
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
-      return { success: false, errors: [{ field: 'system', message: 'Supplier not found' }] };
-    }
+    if ((error as any)?.code === 'P2025') return { success: false, errors: [{ field: 'system', message: 'Supplier not found' }] };
     console.error('[SupplierService] Supplier update failed:', error);
     return { success: false, errors: [{ field: 'system', message: error instanceof Error ? error.message : 'Supplier update failed' }] };
   }
@@ -538,8 +439,6 @@ export async function updateSupplier(
  * @returns Paginated supplier list
  */
 export async function listSuppliers(params: SupplierQueryParams = {}): Promise<SupplierListResult> {
-  const db = getPrisma();
-  
   const {
     page = 1,
     pageSize = 20,
@@ -547,38 +446,32 @@ export async function listSuppliers(params: SupplierQueryParams = {}): Promise<S
     sortBy = 'name',
     sortDirection = 'asc',
   } = params;
-  
-  const skip = (page - 1) * pageSize;
-  
-  // Build where clause
-  const where: Prisma.SupplierWhereInput = {};
+  const offset = (page - 1) * pageSize;
+  // Drizzle ORM: build where clause for search
+  let whereExpr: any = undefined;
   if (search) {
-    where.OR = [
-      { name: { contains: search } },
-      { address: { contains: search } },
-      { contacts: { some: { value: { contains: search } } } },
-    ];
+    whereExpr = or(like(supplier.name, `%${search}%`), like(supplier.address, `%${search}%`));
   }
-  
-  // Execute query
-  const [suppliers, total] = await Promise.all([
-    db.supplier.findMany({
-      where,
-      include: { contacts: true },
-      skip,
-      take: pageSize,
-      orderBy: { [sortBy]: sortDirection },
-    }),
-    db.supplier.count({ where }),
-  ]);
-  
-  return {
-    data: suppliers.map(mapPrismaSupplierToDto),
-    total,
-    page,
-    pageSize,
-    totalPages: Math.ceil(total / pageSize),
-  };
+
+  const totalRow = await db.select({ c: sql`count(*)` }).from(supplier).where(whereExpr).get();
+  const total = Number(totalRow?.c ?? 0);
+
+  const sortColumn = sortBy === 'createdAt' ? supplier.createdAt : supplier.name;
+  const suppliers = await db.select().from(supplier).where(whereExpr).orderBy(sortDirection === 'asc' ? asc(sortColumn) : desc(sortColumn)).limit(pageSize).offset(offset).all();
+
+  // Fetch contacts for all suppliers
+  const ids = suppliers.map((s: any) => s.id);
+  const contacts = ids.length ? await db.select().from(supplierContact).where(inArray(supplierContact.supplierId, ids)).all() : [];
+  const contactsMap = new Map<string, any[]>();
+  for (const c of contacts) {
+    const key = String(c.supplierId);
+    const arr = contactsMap.get(key) ?? [];
+    arr.push(c);
+    contactsMap.set(key, arr);
+  }
+
+    const dtoSuppliers = suppliers.map((s: any) => mapPrismaSupplierToDto({ ...s, contacts: contactsMap.get(s.id) ?? [] }));
+  return { data: dtoSuppliers, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
 }
 
 /**
@@ -589,18 +482,17 @@ export async function listSuppliers(params: SupplierQueryParams = {}): Promise<S
  * @returns Array of matching suppliers
  */
 export async function searchSuppliers(query: string, limit: number = 10): Promise<Supplier[]> {
-  const db = getPrisma();
-  
-  const suppliers = await db.supplier.findMany({
-    where: {
-      name: { contains: query },
-    },
-    include: { contacts: true },
-    take: limit,
-    orderBy: { name: 'asc' },
-  });
-  
-  return suppliers.map(mapPrismaSupplierToDto);
+  const rows = await db.select().from(supplier).where(like(supplier.name, `%${query}%`)).orderBy(asc(supplier.name)).limit(limit).all();
+  const ids = rows.map((r: any) => r.id);
+  const contacts = ids.length ? await db.select().from(supplierContact).where(inArray(supplierContact.supplierId, ids)).all() : [];
+  const contactsMap = new Map<string, any[]>();
+  for (const c of contacts) {
+    const key = String(c.supplierId);
+    const arr = contactsMap.get(key) ?? [];
+    arr.push(c);
+    contactsMap.set(key, arr);
+  }
+    return rows.map((r: any) => mapPrismaSupplierToDto({ ...r, contacts: contactsMap.get(r.id) ?? [] }));
 }
 
 /**
@@ -613,33 +505,13 @@ export async function searchSuppliers(query: string, limit: number = 10): Promis
 export async function getSupplierPhonesByName(
   supplierName: string
 ): Promise<Array<{ value: string; isPrimary: boolean; channels: string[] | null }>> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   // Find supplier by exact name match (case-insensitive via contains)
-  const supplier = await db.supplier.findFirst({
-    where: {
-      name: { equals: supplierName },
-    },
-    include: {
-      contacts: {
-        where: { type: 'PHONE' },
-        orderBy: [
-          { isPrimary: 'desc' }, // Primary first
-          { createdAt: 'asc' },
-        ],
-      },
-    },
-  });
-  
-  if (!supplier) {
-    return [];
-  }
-  
-  return supplier.contacts.map((contact) => ({
-    value: contact.value,
-    isPrimary: contact.isPrimary,
-    channels: contact.channel ? contact.channel.split(',') : null,
-  }));
+  const sup = await db.select().from(supplier).where(eq(supplier.name, supplierName)).get();
+  if (!sup) return [];
+  const phones = await db.select().from(supplierContact).where(and(eq(supplierContact.supplierId, sup.id), eq(supplierContact.type, 'PHONE'))).orderBy(desc(supplierContact.createdAt)).all();
+    return phones.map((contact: any) => ({ value: contact.value ?? '', isPrimary: !!contact.isPrimary, channels: contact.channel ? contact.channel.split(',') : null }));
 }
 
 /**
@@ -650,15 +522,10 @@ export async function getSupplierPhonesByName(
  * @returns Number of active products referencing this supplier
  */
 export async function getActiveProductsCountBySupplierName(supplierName: string): Promise<number> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   if (!supplierName || supplierName.trim().length === 0) return 0;
-  const count = await db.priceEntry.count({
-    where: {
-      supplierName: supplierName,
-      isActive: true,
-    } as any,
-  });
-  return count;
+  const row = await db.select({ c: sql`count(*)` }).from(priceEntry).where(and(eq(priceEntry.supplierName, supplierName), eq(priceEntry.isActive, true))).get();
+  return Number(row?.c ?? 0);
 }
 
 /**
@@ -671,17 +538,15 @@ export async function getActiveProductsCountBySupplierName(supplierName: string)
  * @returns True if deleted, false if not found
  */
 export async function deleteSupplier(id: string): Promise<boolean> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   try {
     // Contacts are deleted via cascade (onDelete: Cascade in schema)
-    await db.supplier.delete({
-      where: { id },
-    });
-    return true;
+    const res: any = await db.delete(supplier).where(eq(supplier.id, id)).run();
+    return (res?.changes ?? 0) > 0;
   } catch (error) {
     // P2025: Record not found
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+    if (error && (error as any).code === 'P2025') {
       return false;
     }
     throw error;
@@ -704,8 +569,8 @@ function mapPrismaSupplierToDto(supplier: any): Supplier {
     name: supplier.name,
     address: supplier.address,
     website: supplier.website,
-    createdAt: supplier.createdAt,
-    updatedAt: supplier.updatedAt,
+    createdAt: supplier.createdAt ? new Date(supplier.createdAt) : new Date(0),
+    updatedAt: supplier.updatedAt ? new Date(supplier.updatedAt) : new Date(),
     operationId: supplier.operationId,
     contacts: supplier.contacts.map((contact: any): SupplierContact => ({
       id: contact.id,
@@ -715,7 +580,7 @@ function mapPrismaSupplierToDto(supplier: any): Supplier {
       channels: contact.channel ? contact.channel.split(',') as PhoneChannel[] : null,
       value: contact.value,
       isPrimary: contact.isPrimary,
-      createdAt: contact.createdAt,
+      createdAt: contact.createdAt ? new Date(contact.createdAt) : new Date(0),
     })),
   };
 }
@@ -737,12 +602,10 @@ export async function handlePrimaryPhoneDeletion(
   supplierId: string,
   deletedContactId: string
 ): Promise<void> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   // Get the contact being deleted
-  const deletedContact = await db.supplierContact.findUnique({
-    where: { id: deletedContactId },
-  });
+  const deletedContact = await db.select().from(supplierContact).where(eq(supplierContact.id, deletedContactId)).get();
   
   // Only handle if it was a primary phone
   if (!deletedContact || deletedContact.type !== 'PHONE' || !deletedContact.isPrimary) {
@@ -750,19 +613,8 @@ export async function handlePrimaryPhoneDeletion(
   }
   
   // Find another phone to make primary
-  const otherPhone = await db.supplierContact.findFirst({
-    where: {
-      supplierId,
-      type: 'PHONE',
-      id: { not: deletedContactId },
-    },
-    orderBy: { createdAt: 'asc' },
-  });
-  
+  const otherPhone = await db.select().from(supplierContact).where(and(eq(supplierContact.supplierId, supplierId), eq(supplierContact.type, 'PHONE'), sql`${supplierContact.id} != ${deletedContactId}`)).orderBy(asc(supplierContact.createdAt)).limit(1).get();
   if (otherPhone) {
-    await db.supplierContact.update({
-      where: { id: otherPhone.id },
-      data: { isPrimary: true },
-    });
+    await db.update(supplierContact).set({ isPrimary: true }).where(eq(supplierContact.id, otherPhone.id)).run();
   }
 }

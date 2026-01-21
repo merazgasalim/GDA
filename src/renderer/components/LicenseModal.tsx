@@ -22,7 +22,11 @@ export const LicenseModal: React.FC = () => {
   useEffect(() => {
     if (isOpen) {
       // Fetch machine ID when modal opens
-      window.electronApi.license.getMachineId().then(setMachineId);
+      if (window.electronApi && window.electronApi.license && window.electronApi.license.getMachineId) {
+        window.electronApi.license.getMachineId().then(setMachineId).catch(() => {});
+      } else {
+        setError('Preload API introuvable — redémarrez l\'application en mode dev');
+      }
       setError(null);
       setSuccess(null);
       setLicenseKey('');
@@ -40,6 +44,9 @@ export const LicenseModal: React.FC = () => {
     setSuccess(null);
 
     try {
+      if (!window.electronApi || !window.electronApi.license || !window.electronApi.license.activate) {
+        throw new Error('Preload API introuvable');
+      }
       const result = await window.electronApi.license.activate(licenseKey);
       
       if (result.success) {
@@ -59,6 +66,10 @@ export const LicenseModal: React.FC = () => {
   };
 
   const handleDeactivate = async () => {
+    if (!window.electronApi || !window.electronApi.dialog || !window.electronApi.dialog.showMessage) {
+      setError('Preload API introuvable');
+      return;
+    }
     const confirmed = await window.electronApi.dialog.showMessage({
       type: 'question',
       title: 'Désactiver la licence',

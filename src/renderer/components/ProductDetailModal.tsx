@@ -81,6 +81,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   // Stack for navigation history (allows going back to previous product)
   const [navigationStack, setNavigationStack] = useState<string[]>([]);
   const [currentProductId, setCurrentProductId] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   // Load product when modal opens or product changes
   useEffect(() => {
@@ -103,7 +104,45 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
       
       try {
         const entry = await window.electronApi.database.getEntry(currentProductId);
-        setProduct(entry);
+        if (entry) {
+          setProduct(entry);
+          return;
+        }
+
+        // Fallbacks: try several looser searches by reference
+        try {
+          const ref = String(currentProductId).trim();
+          // 1) exact match on reference
+          let params = { page: 1, pageSize: 1, filters: [{ column: 'reference', value: ref, operator: 'equals' }] } as any;
+          let res = await window.electronApi.database.queryEntries(params);
+          if (res && Array.isArray(res.data) && res.data.length > 0) {
+            setProduct(res.data[0] as any);
+            return;
+          }
+
+          // 2) contains match on reference
+          params = { page: 1, pageSize: 1, filters: [{ column: 'reference', value: ref, operator: 'contains' }] } as any;
+          res = await window.electronApi.database.queryEntries(params);
+          if (res && Array.isArray(res.data) && res.data.length > 0) {
+            setProduct(res.data[0] as any);
+            return;
+          }
+
+          // 3) global search (search across several fields)
+          params = { page: 1, pageSize: 1, globalSearch: ref } as any;
+          res = await window.electronApi.database.queryEntries(params);
+          if (res && Array.isArray(res.data) && res.data.length > 0) {
+            setProduct(res.data[0] as any);
+            return;
+          }
+
+          // no fallback hits
+        } catch (fbErr) {
+          console.warn('ProductDetailModal: fallback lookup failed', fbErr);
+        }
+
+        // If still not found, set null so UI shows "Produit non trouvé"
+        setProduct(null);
       } catch (err) {
         console.error('Failed to fetch product:', err);
         setError(err instanceof Error ? err.message : 'Failed to load product');
@@ -114,6 +153,28 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     
     fetchProduct();
   }, [currentProductId]);
+
+  // allow manual retry when clicking retry button even if id hasn't changed
+  useEffect(() => {
+    if (!currentProductId) return;
+    // trigger fetch when retryKey changes
+    const fetchNow = async () => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const entry = await window.electronApi.database.getEntry(currentProductId);
+        if (entry) {
+          setProduct(entry);
+          return;
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchNow();
+  }, [retryKey]);
 
   // Handle navigation to a compatible product
   const handleProductClick = (newProductId: string) => {
@@ -266,8 +327,19 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 />
               </>
             ) : (
-              <div className="text-center py-12">
+              <div className="text-center py-6 space-y-3">
                 <p className="text-sm text-gray-500">Produit non trouvé</p>
+                <div className="text-xs text-gray-400">Attempted id: <span className="text-xs text-gray-600">{String(currentProductId)}</span></div>
+                <div className="text-xs text-gray-400">Preload API: <span className="text-xs text-gray-600">{(window as any).electronApi ? 'available' : 'missing'}</span></div>
+                {error && <div className="text-xs text-red-600">Error: {error}</div>}
+                <div className="mt-2">
+                  <button
+                    onClick={() => setRetryKey(k => k + 1)}
+                    className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                  >
+                    Réessayer
+                  </button>
+                </div>
               </div>
             )}
           </div>

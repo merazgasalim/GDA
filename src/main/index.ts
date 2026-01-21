@@ -18,6 +18,7 @@
 
 import { app, BrowserWindow, shell } from 'electron';
 import path from 'path';
+import fs from 'fs';
 import { registerIpcHandlers, unregisterIpcHandlers } from './ipc-handlers';
 import { initializeDatabase, closeDatabase } from './services/database-service';
 import { validateLicense } from './services/license-service';
@@ -58,11 +59,19 @@ app.on('web-contents-created', (_event, contents) => {
 
 let mainWindow: BrowserWindow | null = null;
 
-const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-// Check if running in development mode - VITE_DEV_SERVER_URL is set by vite-plugin-electron
-const isDev = !!process.env.VITE_DEV_SERVER_URL;
+// Support both `VITE_DEV_SERVER_URL` (vite-plugin-electron) and `ELECTRON_RENDERER_URL` (electron-vite)
+const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173';
+// Check if running in development mode
+const isDev = !!(process.env.VITE_DEV_SERVER_URL || process.env.ELECTRON_RENDERER_URL);
 
 async function createWindow(): Promise<void> {
+  // Determine preload path: prefer same-dir `preload.js`, fall back to sibling `preload/preload.js`
+  let preloadPath = path.join(__dirname, 'preload.js');
+  if (!fs.existsSync(preloadPath)) {
+    const alt = path.join(__dirname, '../preload/preload.js');
+    if (fs.existsSync(alt)) preloadPath = alt;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -73,8 +82,8 @@ async function createWindow(): Promise<void> {
     frame: true, // Use native frame for now
     backgroundColor: '#f3f4f6',
     webPreferences: {
-      // SECURITY: Preload script provides safe API
-      preload: path.join(__dirname, 'preload.js'),
+    // SECURITY: Preload script provides safe API
+    preload: preloadPath,
       // SECURITY: Isolate renderer context
       contextIsolation: true,
       // SECURITY: Disable Node.js in renderer
@@ -98,7 +107,17 @@ async function createWindow(): Promise<void> {
     // Open DevTools in development
     mainWindow.webContents.openDevTools();
   } else {
-    await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    // In packaged apps __dirname may point inside the asar archive.
+    // Use app.getAppPath() to resolve the effective application root which
+    // works whether the app is packaged in an asar or run from source.
+    const indexPath = path.join(app.getAppPath(), 'dist', 'index.html');
+    if (!fs.existsSync(indexPath)) {
+      console.error('Renderer index.html not found at', indexPath);
+      // Fallback to previous behavior for diagnostics
+      await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    } else {
+      await mainWindow.loadFile(indexPath);
+    }
   }
 
   // Handle window close

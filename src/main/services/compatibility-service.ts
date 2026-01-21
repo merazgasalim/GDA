@@ -37,7 +37,9 @@
  * - Database design: prisma/schema.prisma (ProductCompatibility model)
  */
 
-import { PrismaClient, Prisma } from '@prisma/client';
+import { db } from '../../shared/drizzle';
+import { eq, and, or, inArray, like, sql, asc, desc, ne } from 'drizzle-orm';
+import { productCompatibility, priceEntry, externalProductReference } from '../../shared/schema';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   CreateCompatibility,
@@ -50,31 +52,10 @@ import type {
   CompatibilityRelationType,
 } from '../../shared/types';
 import { createOperation, completeOperation, failOperation } from './operation-service';
-import { assertOperationAttached } from '../../shared/operationService';
+// shared operation helpers are imported where needed
 
 // ===========================================
-// PRISMA CLIENT ACCESSOR
-// ===========================================
-
-let prismaClient: PrismaClient | null = null;
-
-/**
- * Set the Prisma client instance.
- * Called from database-service.ts during initialization.
- */
-export function setCompatibilityServicePrisma(client: PrismaClient): void {
-  prismaClient = client;
-}
-
-/**
- * Get the Prisma client, throwing if not initialized.
- */
-function getPrisma(): PrismaClient {
-  if (!prismaClient) {
-    throw new Error('Compatibility service not initialized. Call setCompatibilityServicePrisma first.');
-  }
-  return prismaClient;
-}
+// Drizzle ORM is initialized in shared/drizzle.ts and imported as db
 
 // ===========================================
 // VALIDATION
@@ -91,7 +72,7 @@ function getPrisma(): PrismaClient {
 async function validateCompatibilityInput(
   input: CreateCompatibility
 ): Promise<{ isValid: boolean; error?: string }> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   // Rule 1: Source and target must be different
   if (input.targetType === 'INTERNAL' && input.sourceProductId === input.targetProductId) {
@@ -102,9 +83,7 @@ async function validateCompatibilityInput(
   }
   
   // Rule 2: Source product must exist
-  const sourceExists = await db.priceEntry.findFirst({
-    where: { id: input.sourceProductId, isActive: true },
-  });
+  const sourceExists = await db.select().from(priceEntry).where(and(eq(priceEntry.id, input.sourceProductId), eq(priceEntry.isActive, true))).get();
   if (!sourceExists) {
     return {
       isValid: false,
@@ -117,9 +96,7 @@ async function validateCompatibilityInput(
     if (!input.targetProductId) {
       return { isValid: false, error: 'ID du produit cible requise' };
     }
-    const targetExists = await db.priceEntry.findFirst({
-      where: { id: input.targetProductId, isActive: true },
-    });
+    const targetExists = await db.select().from(priceEntry).where(and(eq(priceEntry.id, input.targetProductId), eq(priceEntry.isActive, true))).get();
     if (!targetExists) {
       return {
         isValid: false,
@@ -134,15 +111,14 @@ async function validateCompatibilityInput(
   }
 
   // Rule 4: No duplicate relation of same type (active relations)
-  const existingRelation = await db.productCompatibility.findFirst({
-    where: {
-      sourceProductId: input.sourceProductId,
-      relationType: input.relationType,
-      isActive: true,
-      ...(input.targetType === 'INTERNAL' && input.targetProductId ? { targetProductId: input.targetProductId } : {}),
-      ...(input.targetType === 'EXTERNAL' && input.externalReferenceId ? { externalReferenceId: input.externalReferenceId } : {}),
-    },
-  });
+  const whereClause = and(
+    eq(productCompatibility.sourceProductId, input.sourceProductId),
+    eq(productCompatibility.relationType, input.relationType),
+    eq(productCompatibility.isActive, true),
+    input.targetType === 'INTERNAL' && input.targetProductId ? eq(productCompatibility.targetProductId, input.targetProductId) : undefined,
+    input.targetType === 'EXTERNAL' && input.externalReferenceId ? eq(productCompatibility.externalReferenceId, input.externalReferenceId) : undefined
+  );
+  const existingRelation = await db.select().from(productCompatibility).where(whereClause).get();
   if (existingRelation) {
     return {
       isValid: false,
@@ -174,7 +150,7 @@ export async function addCompatibility(
   input: CreateCompatibility,
   createdBy: string = 'local'
 ): Promise<CreateCompatibilityResult> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   // Validate input
   const validation = await validateCompatibilityInput(input);
@@ -187,102 +163,44 @@ export async function addCompatibility(
   
   try {
     // Create operation and related rows in a single transaction for atomicity
-    const result = await db.$transaction(async (tx) => {
-      // create operation
-      const op = await tx.operationLog.create({ data: ({
-        operationType: 'COMPATIBILITY_ADD',
-        payloadSnapshot: JSON.stringify({
-          sourceProductId: input.sourceProductId,
-          targetType: input.targetType,
-          targetProductId: input.targetProductId ?? null,
-          externalReferenceId: input.externalReferenceId ?? null,
-          relationType: input.relationType,
-          note: input.note ?? null,
-        }),
-        status: 'APPLIED',
-        createdBy: createdBy,
-        type: 'COMPATIBILITY_ADD',
-        legacyStatus: 'PENDING',
-        metadata: JSON.stringify({ sourceProductId: input.sourceProductId }),
-        description: `Ajout de compatibilité: ${input.sourceProductId} → ${input.targetType === 'INTERNAL' ? input.targetProductId : 'EXTERNAL'} (${input.relationType})`,
-        rowCount: 0,
-      } as any) });
-
-      let externalId: string | null = null;
-      if (input.targetType === 'EXTERNAL') {
-        if (input.externalReferenceId) {
-          externalId = input.externalReferenceId;
-        } else if (input.externalReference) {
-          const normRef = input.externalReference.reference.trim().toUpperCase();
-          const normBrand = input.externalReference.brand.trim().toUpperCase();
-          const existingExt = await tx.externalProductReference.findFirst({ where: { reference: normRef, brand: normBrand } });
-          if (existingExt) {
-            externalId = existingExt.id;
-          } else {
-            const created = await tx.externalProductReference.create({ data: ({
-              id: uuidv4(),
-              reference: normRef,
-              designation: input.externalReference.designation.trim(),
-              brand: normBrand,
-              notes: input.externalReference.notes ?? null,
-              createdBy,
-              operationId: op.id,
-            } as any) });
-            externalId = created.id;
-          }
-        }
-      }
-
-      const data: any = {
-        id: uuidv4(),
+    const operationId = await createOperation({
+      type: 'COMPATIBILITY_ADD',
+      description: `Ajout compatibilité ${input.sourceProductId} → ${input.targetProductId ?? input.externalReferenceId}`,
+      metadata: {
         sourceProductId: input.sourceProductId,
-        targetType: input.targetType ?? 'INTERNAL',
+        targetProductId: input.targetProductId ?? undefined,
+        externalReferenceId: input.externalReferenceId ?? undefined,
         relationType: input.relationType,
-        note: input.note ?? null,
-        isActive: true,
-        createdBy,
-        operationId: op.id,
-      };
-
-      if (typeof input.targetProductId === 'string' && input.targetProductId.length > 0 && input.targetType === 'INTERNAL') {
-        data.targetProductId = input.targetProductId;
-      }
-      if (externalId) data.externalReferenceId = externalId;
-
-      const createdCompat = await tx.productCompatibility.create({ data: (data as any) });
-
-      // Runtime assertion: ensure created compatibility has operationId
-      assertOperationAttached(createdCompat);
-
-      // update operation.entityId to point to created compatibility
-      await tx.operationLog.update({ where: { id: op.id }, data: ({ entityId: createdCompat.id } as any) });
-
-      return { opId: op.id, createdCompat };
+      },
+      createdBy,
     });
 
-    // Complete operation after commit
-    await completeOperation({ operationId: result.opId, rowCount: 1 });
+    const newId = uuidv4();
 
-    const compatibility = result.createdCompat;
-    return {
-      success: true,
-      compatibility: {
-        id: compatibility.id,
-        sourceProductId: compatibility.sourceProductId,
-        targetType: compatibility.targetType as 'INTERNAL' | 'EXTERNAL',
-        targetProductId: compatibility.targetProductId ?? null,
-        externalReferenceId: (compatibility as any).externalReferenceId ?? null,
-        relationType: compatibility.relationType as CompatibilityRelationType,
-        note: compatibility.note ?? null,
-        isActive: compatibility.isActive,
-        createdAt: compatibility.createdAt,
-        createdBy: compatibility.createdBy,
-        deactivatedAt: compatibility.deactivatedAt ?? null,
-        deactivatedBy: compatibility.deactivatedBy ?? null,
-        operationId: compatibility.operationId ?? null,
-      },
-      operationId: result.opId,
-    };
+    const row = {
+      id: newId,
+      sourceProductId: input.sourceProductId,
+      targetProductId: input.targetType === 'INTERNAL' ? input.targetProductId ?? null : null,
+      externalReferenceId: input.targetType === 'EXTERNAL' ? input.externalReferenceId ?? null : null,
+      targetType: input.targetType,
+      relationType: input.relationType,
+      note: input.note ?? null,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      createdBy: createdBy,
+    } as any;
+
+    await db.insert(productCompatibility).values(row).run();
+
+    await completeOperation({ operationId, rowCount: 1 });
+
+    const compatibility = {
+      ...row,
+      createdAt: new Date(row.createdAt),
+    } as any;
+
+    return { success: true, compatibility, operationId };
+
   } catch (error) {
     console.error('[CompatibilityService] Failed to add compatibility:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Failed to add compatibility' };
@@ -312,15 +230,10 @@ export async function removeCompatibility(
   reason?: string,
   removedBy: string = 'local'
 ): Promise<RemoveCompatibilityResult> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   // Find existing active relation
-  const existing = await db.productCompatibility.findFirst({
-    where: {
-      id: compatibilityId,
-      isActive: true,
-    },
-  });
+  const existing = await db.select().from(productCompatibility).where(and(eq(productCompatibility.id, compatibilityId), eq(productCompatibility.isActive, true))).get();
   
   if (!existing) {
     return {
@@ -347,15 +260,11 @@ export async function removeCompatibility(
       createdBy: removedBy,
     });
     
-    // Soft-delete: update isActive and deactivation fields
-    await db.productCompatibility.update({
-      where: { id: compatibilityId },
-      data: {
-        isActive: false,
-        deactivatedAt: new Date(),
-        deactivatedBy: removedBy,
-      },
-    });
+    // Soft-delete: update isActive and deactivation fields (Drizzle)
+    await db.update(productCompatibility)
+      .set({ isActive: false, deactivatedAt: new Date().toISOString(), deactivatedBy: removedBy })
+      .where(eq(productCompatibility.id, compatibilityId))
+      .run();
     
     // Complete operation
     await completeOperation({
@@ -397,7 +306,7 @@ export async function removeCompatibility(
 export async function getCompatibilitiesForProduct(
   params: CompatibilityQueryParams
 ): Promise<CompatibilityWithDetails[]> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
   const {
     productId,
@@ -407,30 +316,22 @@ export async function getCompatibilitiesForProduct(
   } = params;
   
   // Build base where clause for outgoing relations
-  const outgoingWhere: Prisma.ProductCompatibilityWhereInput = {
-    sourceProductId: productId,
-    ...(relationType && { relationType }),
-    ...(!includeInactive && { isActive: true }),
-  };
-  
-  // Query outgoing relations
-  const outgoingRelations = await db.productCompatibility.findMany({
-    where: outgoingWhere,
-    orderBy: { createdAt: 'desc' },
-  });
+  const outgoingWhere = and(
+    eq(productCompatibility.sourceProductId, productId),
+    relationType ? eq(productCompatibility.relationType, relationType) : undefined,
+    !includeInactive ? eq(productCompatibility.isActive, true) : undefined
+  );
+  const outgoingRelations = await db.select().from(productCompatibility).where(outgoingWhere).orderBy(desc(productCompatibility.createdAt)).all();
   
   // Query incoming relations if requested
   let incomingRelations: typeof outgoingRelations = [];
   if (includeIncoming) {
-    const incomingWhere: Prisma.ProductCompatibilityWhereInput = {
-      targetProductId: productId,
-      ...(relationType && { relationType }),
-      ...(!includeInactive && { isActive: true }),
-    };
-    incomingRelations = await db.productCompatibility.findMany({
-      where: incomingWhere,
-      orderBy: { createdAt: 'desc' },
-    });
+    const incomingWhere = and(
+      eq(productCompatibility.targetProductId, productId),
+      relationType ? eq(productCompatibility.relationType, relationType) : undefined,
+      !includeInactive ? eq(productCompatibility.isActive, true) : undefined
+    );
+    incomingRelations = await db.select().from(productCompatibility).where(incomingWhere).orderBy(desc(productCompatibility.createdAt)).all();
   }
   
   // Combine and resolve product details
@@ -450,19 +351,21 @@ export async function getCompatibilitiesForProduct(
       }
     } else {
       // incoming: related product is the sourceProductId (always internal)
-      productIds.add(rel.sourceProductId);
+      if (rel.sourceProductId) productIds.add(rel.sourceProductId);
     }
   }
 
-  // Fetch product and external details
-  const products = await db.priceEntry.findMany({ where: { id: { in: Array.from(productIds) } } });
-  const externals = await db.externalProductReference.findMany({ where: { id: { in: Array.from(externalIds) } } });
+    
+  const products = productIds.size > 0
+    ? await db.select().from(priceEntry).where(inArray(priceEntry.id, Array.from(productIds))).all()
+    : [];
+  const externals = await db.select().from(externalProductReference).where(inArray(externalProductReference.id, Array.from(externalIds))).all();
 
-  const productMap = new Map(products.map(p => [p.id, p]));
-  const externalMap = new Map(externals.map(e => [e.id, e]));
+  const productMap = new Map<string, any>(products.map((p: any) => [p.id, p]));
+  const externalMap = new Map<string, any>(externals.map((e: any) => [e.id, e]));
 
   // Build result with resolved details (handle INTERNAL or EXTERNAL targets)
-  const result: CompatibilityWithDetails[] = allRelations.map(rel => {
+  const result: CompatibilityWithDetails[] = allRelations.map((rel: any) => {
     const isOutgoing = rel.sourceProductId === productId;
 
     // Outgoing and external
@@ -472,15 +375,15 @@ export async function getCompatibilitiesForProduct(
         id: rel.id,
         relationType: rel.relationType as CompatibilityRelationType,
         note: rel.note,
-        createdAt: rel.createdAt,
-        createdBy: rel.createdBy,
+        createdAt: rel.createdAt ? new Date(rel.createdAt) : new Date(0),
+        createdBy: rel.createdBy ?? 'system',
         targetType: 'EXTERNAL',
         reference: ext?.reference ?? 'N/A',
         designation: ext?.designation ?? 'N/A',
         brand: ext?.brand ?? 'N/A',
         supplierName: 'N/A',
         price: null,
-        sourceProductId: rel.sourceProductId,
+        sourceProductId: rel.sourceProductId as string,
         targetProductId: null,
         externalReferenceId: rel.externalReferenceId,
       };
@@ -494,15 +397,15 @@ export async function getCompatibilitiesForProduct(
       id: rel.id,
       relationType: rel.relationType as CompatibilityRelationType,
       note: rel.note,
-      createdAt: rel.createdAt,
-      createdBy: rel.createdBy,
+      createdAt: rel.createdAt ? new Date(rel.createdAt) : new Date(0),
+      createdBy: rel.createdBy ?? 'system',
       targetType: 'INTERNAL',
       reference: relatedProduct?.reference ?? 'N/A',
       designation: relatedProduct?.designation ?? 'N/A',
       brand: relatedProduct?.brand ?? 'N/A',
       supplierName: relatedProduct?.supplierName ?? 'N/A',
       price: relatedProduct?.price ?? null,
-      sourceProductId: rel.sourceProductId,
+      sourceProductId: rel.sourceProductId as string,
       targetProductId: rel.targetProductId,
     };
   });
@@ -519,40 +422,40 @@ export async function getCompatibilitiesForProduct(
 export async function getCompatibilitySummary(
   productId: string
 ): Promise<CompatibilitySummary> {
-  const db = getPrisma();
+  // db is imported from Drizzle
   
-  // Count outgoing relations by type
-  const outgoingCounts = await db.productCompatibility.groupBy({
-    by: ['relationType'],
-    where: {
-      sourceProductId: productId,
-      isActive: true,
-    },
-    _count: true,
-  });
-  
+  // Count outgoing relations by type (Drizzle)
+  const outgoingRows = await db
+    .select({ relationType: productCompatibility.relationType, count: sql`count(*)` })
+    .from(productCompatibility)
+    .where(and(eq(productCompatibility.sourceProductId, productId), eq(productCompatibility.isActive, true)))
+    .groupBy(productCompatibility.relationType)
+    .all();
+
   // Count incoming relations
-  const incomingCount = await db.productCompatibility.count({
-    where: {
-      targetProductId: productId,
-      isActive: true,
-    },
-  });
-  
+  const incomingRows = await db
+    .select({ count: sql`count(*)` })
+    .from(productCompatibility)
+    .where(and(eq(productCompatibility.targetProductId, productId), eq(productCompatibility.isActive, true)))
+    .all();
+
   // Build type breakdown
   const byType: Record<CompatibilityRelationType, number> = {
     EQUIVALENT: 0,
     SUBSTITUTE: 0,
     OEM_ALTERNATIVE: 0,
   };
-  
+
   let outgoingTotal = 0;
-  for (const group of outgoingCounts) {
-    const type = group.relationType as CompatibilityRelationType;
-    byType[type] = group._count;
-    outgoingTotal += group._count;
+  for (const row of outgoingRows) {
+    const type = row.relationType as CompatibilityRelationType;
+    const c = Number(row.count ?? 0);
+    byType[type] = c;
+    outgoingTotal += c;
   }
-  
+
+  const incomingCount = Number(incomingRows[0]?.count ?? 0);
+
   return {
     outgoingCount: outgoingTotal,
     incomingCount,
@@ -577,56 +480,56 @@ export async function searchProductsForCompatibility(
   query: string,
   limit: number = 20
 ): Promise<CompatibilitySearchResult[]> {
-  const db = getPrisma();
-  
+  // use shared `db` from drizzle import
   if (!query || query.trim().length < 2) {
     return [];
   }
   
   const searchTerm = query.trim();
   
-  // Search active products excluding source
-  const products = await db.priceEntry.findMany({
-    where: {
-      isActive: true,
-      id: { not: sourceProductId },
-      OR: [
-        { reference: { contains: searchTerm } },
-        { designation: { contains: searchTerm } },
-        { brand: { contains: searchTerm } },
-      ],
-    },
-    take: limit,
-    orderBy: [
-      { reference: 'asc' },
-      { brand: 'asc' },
-    ],
-  });
+  // Search active products excluding source (Drizzle)
+  const products = await db
+    .select()
+    .from(priceEntry)
+    .where(
+      and(
+        eq(priceEntry.isActive, true),
+        ne(priceEntry.id, sourceProductId),
+        or(
+          like(priceEntry.reference, `%${searchTerm}%`),
+          like(priceEntry.designation, `%${searchTerm}%`),
+          like(priceEntry.brand, `%${searchTerm}%`)
+        )
+      )
+    )
+    .orderBy(asc(priceEntry.reference), asc(priceEntry.brand))
+    .limit(limit)
+    .all();
   
   // Get existing relations for these products
-  const productIds = products.map(p => p.id);
-  const existingRelations = await db.productCompatibility.findMany({
-    where: {
-      sourceProductId,
-      targetProductId: { in: productIds },
-      isActive: true,
-    },
-    select: {
-      targetProductId: true,
-      relationType: true,
-    },
-  });
+  const productIds = products.map((p: any) => p.id);
+  const existingRelations = await db
+    .select({ targetProductId: productCompatibility.targetProductId, relationType: productCompatibility.relationType })
+    .from(productCompatibility)
+    .where(
+      and(
+        eq(productCompatibility.sourceProductId, sourceProductId),
+        inArray(productCompatibility.targetProductId, productIds),
+        eq(productCompatibility.isActive, true)
+      )
+    )
+    .all();
   
   const relationMap = new Map<string, CompatibilityRelationType>(
     existingRelations
       .filter((r: { targetProductId: string | null }) => !!r.targetProductId)
-      .map((r: { targetProductId: string | null; relationType: string }) => [
+      .map((r: { targetProductId: string | null; relationType: string | null }) => [
         r.targetProductId as string,
         r.relationType as CompatibilityRelationType,
       ])
   );
   // Build initial results for internal products
-  const results: CompatibilitySearchResult[] = products.map((p): CompatibilitySearchResult => ({
+  const results: CompatibilitySearchResult[] = products.map((p: any): CompatibilitySearchResult => ({
     id: p.id,
     reference: p.reference,
     designation: p.designation,
@@ -639,32 +542,37 @@ export async function searchProductsForCompatibility(
   }));
 
   // Also search external references and include them in results
-  const externals = await db.externalProductReference.findMany({
-    where: {
-      OR: [
-        { reference: { contains: searchTerm } },
-        { designation: { contains: searchTerm } },
-        { brand: { contains: searchTerm } },
-      ],
-    },
-    take: limit,
-  });
+  const externals = await db
+    .select()
+    .from(externalProductReference)
+    .where(
+      or(
+        like(externalProductReference.reference, `%${searchTerm}%`),
+        like(externalProductReference.designation, `%${searchTerm}%`),
+        like(externalProductReference.brand, `%${searchTerm}%`)
+      )
+    )
+    .limit(limit)
+    .all();
 
   if (externals.length > 0) {
-    const extIds = externals.map(e => e.id);
-    const existingExtRelations = await db.productCompatibility.findMany({
-      where: {
-        sourceProductId,
-        externalReferenceId: { in: extIds },
-        isActive: true,
-      },
-      select: { externalReferenceId: true, relationType: true },
-    });
+    const extIds = externals.map((e: any) => e.id);
+    const existingExtRelations = await db
+      .select({ externalReferenceId: productCompatibility.externalReferenceId, relationType: productCompatibility.relationType })
+      .from(productCompatibility)
+      .where(
+        and(
+          eq(productCompatibility.sourceProductId, sourceProductId),
+          inArray(productCompatibility.externalReferenceId, extIds),
+          eq(productCompatibility.isActive, true)
+        )
+      )
+      .all();
 
     const extRelationMap = new Map<string, CompatibilityRelationType>(
       existingExtRelations
         .filter((r: { externalReferenceId: string | null }) => !!r.externalReferenceId)
-        .map((r: { externalReferenceId: string | null; relationType: string }) => [
+        .map((r: { externalReferenceId: string | null; relationType: string | null }) => [
           r.externalReferenceId as string,
           r.relationType as CompatibilityRelationType,
         ])
@@ -673,9 +581,9 @@ export async function searchProductsForCompatibility(
     for (const e of externals) {
       results.push({
         id: e.id,
-        reference: e.reference,
-        designation: e.designation,
-        brand: e.brand,
+        reference: e.reference ?? 'N/A',
+        designation: e.designation ?? 'N/A',
+        brand: e.brand ?? 'N/A',
         supplierName: null,
         price: null,
         hasExistingRelation: extRelationMap.has(e.id),
@@ -701,21 +609,21 @@ export async function checkCompatibilityExists(
   targetProductId: string,
   relationType?: CompatibilityRelationType
 ): Promise<boolean> {
-  const db = getPrisma();
-  
-  const existing = await db.productCompatibility.findFirst({
-    where: {
-      sourceProductId,
-      OR: [
-        { targetProductId },
-        { externalReferenceId: targetProductId },
-      ],
-      ...(relationType && { relationType }),
-      isActive: true,
-    },
-  });
-  
-  return existing !== null;
+  // use shared `db` from drizzle import
+  const existing = await db
+    .select()
+    .from(productCompatibility)
+    .where(
+      and(
+        eq(productCompatibility.sourceProductId, sourceProductId),
+        or(eq(productCompatibility.targetProductId, targetProductId), eq(productCompatibility.externalReferenceId, targetProductId)),
+        relationType ? eq(productCompatibility.relationType, relationType) : undefined,
+        eq(productCompatibility.isActive, true)
+      )
+    )
+    .get();
+
+  return !!existing;
 }
 
 /**
@@ -725,16 +633,13 @@ export async function checkCompatibilityExists(
  * @returns Count of products with compatibilities
  */
 export async function getProductsWithCompatibilitiesCount(): Promise<number> {
-  const db = getPrisma();
-  
-  // Get distinct source product IDs with active relations
-  const result = await db.productCompatibility.findMany({
-    where: { isActive: true },
-    select: { sourceProductId: true },
-    distinct: ['sourceProductId'],
-  });
-  
-  return result.length;
+  // Drizzle ORM: select all active productCompatibility, then count unique sourceProductId
+  const rows = await db.select({ sourceProductId: productCompatibility.sourceProductId })
+    .from(productCompatibility)
+    .where(eq(productCompatibility.isActive, true))
+    .all();
+  const unique = new Set(rows.map((r: any) => r.sourceProductId));
+  return unique.size;
 }
 
 /**
@@ -747,52 +652,38 @@ export async function getProductsWithCompatibilitiesCount(): Promise<number> {
 export async function getBulkCompatibilityCounts(
   productIds: string[]
 ): Promise<Map<string, number>> {
-  const db = getPrisma();
-  
   if (productIds.length === 0) {
     return new Map();
   }
-  
-  // Get all outgoing relations (where product is source)
-  const outgoing = await db.productCompatibility.groupBy({
-    by: ['sourceProductId'],
-    where: {
-      sourceProductId: { in: productIds },
-      isActive: true,
-    },
-    _count: {
-      id: true,
-    },
-  });
-  
-  // Get all incoming relations (where product is target)
-  const incoming = await db.productCompatibility.groupBy({
-    by: ['targetProductId'],
-    where: {
-      targetProductId: { in: productIds },
-      isActive: true,
-    },
-    _count: {
-      id: true,
-    },
-  });
-  
-  // Build the map combining both outgoing and incoming counts
+
+  // Outgoing: sourceProductId in productIds
+  const outgoing = await db.select({
+    sourceProductId: productCompatibility.sourceProductId,
+    id: productCompatibility.id,
+  })
+    .from(productCompatibility)
+    .where(and(inArray(productCompatibility.sourceProductId, productIds), eq(productCompatibility.isActive, true)))
+    .all();
+
+  // Incoming: targetProductId in productIds
+  const incoming = await db.select({
+    targetProductId: productCompatibility.targetProductId,
+    id: productCompatibility.id,
+  })
+    .from(productCompatibility)
+    .where(and(inArray(productCompatibility.targetProductId, productIds), eq(productCompatibility.isActive, true)))
+    .all();
+
+  // Aggregate counts
   const countMap = new Map<string, number>();
-  
-  for (const item of outgoing) {
-    const srcId = item.sourceProductId;
-    if (!srcId) continue;
-    countMap.set(srcId, item._count.id);
+  for (const row of outgoing) {
+    if (!row.sourceProductId) continue;
+    countMap.set(row.sourceProductId, (countMap.get(row.sourceProductId) || 0) + 1);
   }
-  
-  for (const item of incoming) {
-    const targetId = item.targetProductId;
-    if (!targetId) continue;
-    const existingCount = countMap.get(targetId) || 0;
-    countMap.set(targetId, existingCount + item._count.id);
+  for (const row of incoming) {
+    if (!row.targetProductId) continue;
+    countMap.set(row.targetProductId, (countMap.get(row.targetProductId) || 0) + 1);
   }
-  
   return countMap;
 }
 
@@ -808,18 +699,15 @@ export async function getBulkCompatibilityCounts(
 export async function getCompatibilitiesForSources(
   productIds: string[]
 ): Promise<CompatibilityWithDetails[]> {
-  const db = getPrisma();
-
   if (!productIds || productIds.length === 0) return [];
 
-  // Fetch active outgoing relations where sourceProductId is in productIds
-  const relations = await db.productCompatibility.findMany({
-    where: {
-      sourceProductId: { in: productIds },
-      isActive: true,
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+  // Drizzle ORM: select all active outgoing relations for these sources
+  const relations = await db
+    .select()
+    .from(productCompatibility)
+    .where(and(inArray(productCompatibility.sourceProductId, productIds), eq(productCompatibility.isActive, true)))
+    .orderBy(desc(productCompatibility.createdAt))
+    .all();
 
   // Collect internal product IDs and external reference IDs to resolve details
   const internalIds = new Set<string>();
@@ -833,32 +721,32 @@ export async function getCompatibilitiesForSources(
   }
 
   const products = internalIds.size > 0
-    ? await db.priceEntry.findMany({ where: { id: { in: Array.from(internalIds) } } })
+    ? await db.select().from(priceEntry).where(inArray(priceEntry.id, Array.from(internalIds))).all()
     : [];
   const externals = externalIds.size > 0
-    ? await db.externalProductReference.findMany({ where: { id: { in: Array.from(externalIds) } } })
+    ? await db.select().from(externalProductReference).where(inArray(externalProductReference.id, Array.from(externalIds))).all()
     : [];
 
-  const productMap = new Map(products.map(p => [p.id, p]));
-  const externalMap = new Map(externals.map(e => [e.id, e]));
+  const productMap = new Map<string, any>(products.map((p: any) => [p.id, p]));
+  const externalMap = new Map<string, any>(externals.map((e: any) => [e.id, e]));
 
   // Resolve into CompatibilityWithDetails
-  const result: CompatibilityWithDetails[] = relations.map(rel => {
+  const result: CompatibilityWithDetails[] = relations.map((rel: any) => {
     if ((rel as any).targetType === 'EXTERNAL' && (rel as any).externalReferenceId) {
       const ext = externalMap.get((rel as any).externalReferenceId);
       return {
         id: rel.id,
         relationType: rel.relationType as CompatibilityRelationType,
         note: rel.note,
-        createdAt: rel.createdAt,
-        createdBy: rel.createdBy,
+        createdAt: rel.createdAt ? new Date(rel.createdAt) : new Date(0),
+        createdBy: rel.createdBy ?? 'system',
         targetType: 'EXTERNAL',
         reference: ext?.reference ?? 'N/A',
         designation: ext?.designation ?? 'N/A',
         brand: ext?.brand ?? 'N/A',
         supplierName: 'N/A',
         price: null,
-        sourceProductId: rel.sourceProductId,
+        sourceProductId: rel.sourceProductId as string,
         targetProductId: null,
         externalReferenceId: (rel as any).externalReferenceId,
       };
@@ -871,15 +759,15 @@ export async function getCompatibilitiesForSources(
       id: rel.id,
       relationType: rel.relationType as CompatibilityRelationType,
       note: rel.note,
-      createdAt: rel.createdAt,
-      createdBy: rel.createdBy,
+      createdAt: rel.createdAt ? new Date(rel.createdAt) : new Date(0),
+      createdBy: rel.createdBy ?? 'system',
       targetType: 'INTERNAL',
       reference: relatedProduct?.reference ?? 'N/A',
       designation: relatedProduct?.designation ?? 'N/A',
       brand: relatedProduct?.brand ?? 'N/A',
       supplierName: relatedProduct?.supplierName ?? 'N/A',
       price: relatedProduct?.price ?? null,
-      sourceProductId: rel.sourceProductId,
+      sourceProductId: rel.sourceProductId as string,
       targetProductId: rel.targetProductId,
     };
   });
@@ -894,12 +782,16 @@ export async function findExternalReferenceByReferenceAndBrand(
   reference: string,
   brand: string
 ): Promise<{ id: string; reference: string; brand: string } | null> {
-  const db = getPrisma();
+  // use shared `db` from drizzle import
   const normRef = reference.trim().toUpperCase();
   const normBrand = brand.trim().toUpperCase();
-  const ext = await db.externalProductReference.findFirst({ where: { reference: normRef, brand: normBrand, isActive: true } });
+  const ext = await db
+    .select()
+    .from(externalProductReference)
+    .where(and(eq(externalProductReference.reference, normRef), eq(externalProductReference.brand, normBrand), eq(externalProductReference.isActive, true)))
+    .get();
   if (!ext) return null;
-  return { id: ext.id, reference: ext.reference, brand: ext.brand };
+  return { id: ext.id, reference: ext.reference ?? '', brand: ext.brand ?? '' };
 }
 
 /**
@@ -913,7 +805,7 @@ export async function convertExternalToInternal(
   newProductId: string,
   convertedBy: string = 'local'
 ): Promise<{ success: boolean; operationId?: string; error?: string }> {
-  const db = getPrisma();
+  // use shared `db` from drizzle import
   let operationId: string | undefined;
 
   try {
@@ -925,16 +817,18 @@ export async function convertExternalToInternal(
     });
 
     // Update compatibilities: set targetType to INTERNAL, targetProductId to newProductId, clear externalReferenceId
-    await db.productCompatibility.updateMany({
-      where: { externalReferenceId, isActive: true },
-      data: { targetType: 'INTERNAL', targetProductId: newProductId, externalReferenceId: null },
-    });
+    await db
+      .update(productCompatibility)
+      .set({ targetType: 'INTERNAL', targetProductId: newProductId, externalReferenceId: null })
+      .where(and(eq(productCompatibility.externalReferenceId, externalReferenceId), eq(productCompatibility.isActive, true)))
+      .run();
 
     // Soft-delete external reference
-    await db.externalProductReference.update({
-      where: { id: externalReferenceId },
-      data: { isActive: false, deactivatedAt: new Date(), deactivatedBy: convertedBy },
-    });
+    await db
+      .update(externalProductReference)
+      .set({ isActive: false, deactivatedAt: new Date().toISOString(), deactivatedBy: convertedBy })
+      .where(eq(externalProductReference.id, externalReferenceId))
+      .run();
 
     await completeOperation({ operationId, rowCount: 1 });
     return { success: true, operationId };

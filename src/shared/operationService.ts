@@ -1,6 +1,9 @@
-import { PrismaClient } from '@prisma/client';
+import { db } from './drizzle';
+import { operationLog, priceEntry, supplier, productCompatibility, externalProductReference, supplierContact } from './schema';
+import { eq } from 'drizzle-orm';
+import { v4 as uuidv4 } from 'uuid';
 
-const prisma = new PrismaClient();
+// Drizzle ORM is initialized in shared/drizzle.ts and imported as db
 
 type OperationType =
   | 'PRODUCT_CREATE'
@@ -21,18 +24,22 @@ export async function createOperationLog(options: {
   createdBy?: string;
 }) {
   if (!options.payload) throw new Error('payload_snapshot is required');
-  const op = await prisma.operationLog.create({
-    data: {
-      id: undefined as any,
-      operationType: options.operationType,
-      entityType: options.entityType ?? null,
-      entityId: options.entityId ?? null,
-      payloadSnapshot: JSON.stringify(options.payload),
-      status: 'APPLIED',
-      createdBy: options.createdBy ?? 'system'
-    }
-  });
-  return op.id;
+  // Insert operation log using Drizzle
+  const id = uuidv4();
+  await db.insert(operationLog).values({
+    id,
+    operationType: options.operationType,
+    entityType: options.entityType ?? null,
+    entityId: options.entityId ?? null,
+    payloadSnapshot: JSON.stringify(options.payload),
+    status: 'APPLIED',
+    createdBy: options.createdBy ?? 'system',
+    type: options.operationType as any,
+    legacyStatus: 'PENDING',
+    rowCount: 0,
+    createdAt: new Date().toISOString(),
+  }).run();
+  return id;
 }
 
 // Helper to perform transactional creation following the enforced sequence
@@ -41,35 +48,78 @@ async function transactionCreate<T>(
   entityType: EntityType,
   payload: any,
   createdBy: string | undefined,
-  createEntityFn: (tx: PrismaClient, operationId: string) => Promise<T>
+  createEntityFn: (tx: any, operationId: string) => Promise<T>
 ) {
   if (!payload) throw new Error('payload_snapshot is required');
-  return await prisma.$transaction(async (tx) => {
-    // 1) create operation log
-    const operation = await tx.operationLog.create({ data: ({
+  // Perform a Drizzle transaction and provide a lightweight shim that
+  // supports the minimal `{table}.create({ data })` / `update` / `delete`
+  // calls used by legacy helpers during the migration.
+  return db.transaction(async (tx: any) => {
+    const operationId = uuidv4();
+
+    // Insert operation log record inside the transaction
+    await tx.insert(operationLog).values({
+      id: operationId,
       operationType,
-      entityType,
-      entityId: null,
+      entityType: entityType ?? null,
+      entityId: payload?.entityId ?? null,
       payloadSnapshot: JSON.stringify(payload),
       status: 'APPLIED',
-      createdBy: createdBy ?? 'system'
-    } as any) });
+      createdBy: createdBy ?? 'system',
+      type: operationType as any,
+      legacyStatus: 'PENDING',
+      rowCount: 0,
+      createdAt: new Date().toISOString(),
+    }).run();
 
-    const operationId = operation.id;
+    // Table lookup for shim
+    const tableMap: Record<string, any> = {
+      priceEntry,
+      supplier,
+      productCompatibility,
+      externalProductReference,
+      supplierContact,
+    };
 
-    // 2) call entity creation function, which must attach operationId to created row
-    const entity = await createEntityFn(tx as unknown as PrismaClient, operationId);
+    const txShim = new Proxy({}, {
+      get(_, prop: string) {
+        const table = tableMap[prop as string];
+        if (!table) {
+          throw new Error(`Unknown table via tx.${String(prop)}`);
+        }
+        return {
+          create: async ({ data }: { data: any }) => {
+            if (!data) throw new Error('create requires data');
+            if (!data.id) data.id = uuidv4();
+            await tx.insert(table).values(data).run();
+            return data;
+          },
+          update: async ({ where, data }: { where: any; data: any }) => {
+            if (!where || !where.id) throw new Error('update currently requires where.id');
+            await tx.update(table).set(data).where(eq((table as any).id, where.id)).run();
+            return { ...where, ...data };
+          },
+          delete: async ({ where }: { where: any }) => {
+            if (!where || !where.id) throw new Error('delete currently requires where.id');
+            await tx.delete(table).where(eq((table as any).id, where.id)).run();
+            return { ...where };
+          }
+        };
+      }
+    });
 
-    // 3) ensure created entity has an id and set operation.entityId if missing
-    const entityId = (entity && (entity as any).id) || null;
-    if (!entityId) {
-      throw new Error('Entity creation did not return an id — aborting transaction');
+    // Call user-provided create function with shim and operationId
+    const result = await createEntityFn(txShim, operationId);
+
+    // Optionally update operation log rowCount if result suggests rows created
+    try {
+      const rowCount = (result && (result as any).length) ? (result as any).length : 1;
+      await tx.update(operationLog).set({ rowCount }).where(eq(operationLog.id, operationId)).run();
+    } catch (e) {
+      // swallow; non-critical
     }
 
-    // 4) update operation to point to entityId
-    await tx.operationLog.update({ where: { id: operationId }, data: ({ entityId } as any) });
-
-    return { operationId, entity };
+    return result;
   });
 }
 

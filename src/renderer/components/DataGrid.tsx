@@ -46,10 +46,9 @@ const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value
   const toRef = useRef<HTMLInputElement | null>(null);
   const textRef = useRef<HTMLInputElement | null>(null);
 
-  // Debug instrumentation: log mount/unmount
+  // Debug instrumentation removed
   useEffect(() => {
-    try { console.log('[DBG] ColumnFilter mounted', _column.accessorKey); } catch {}
-    return () => { try { console.log('[DBG] ColumnFilter unmounted', _column.accessorKey); } catch {} };
+    return () => {};
   }, [_column.accessorKey]);
 
   // Stable debounced updater: store latest onChange in a ref and keep a single debounced fn
@@ -67,16 +66,13 @@ const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value
         requestAnimationFrame(() => requestAnimationFrame(() => {
           try {
             const col = lastFocusedColumnRef.current;
-            console.log('[DBG] attempting focus restore for', col);
             if (col) {
               const el = document.querySelector(`input[data-filter-column="${col}"]`) as HTMLInputElement | null;
               if (el) {
-                console.log('[DBG] focus restored to element for column', col);
                 el.focus();
               }
             } else {
               if (lastFocusedRef.current) {
-                console.log('[DBG] focus restored to lastFocusedRef');
                 lastFocusedRef.current.focus();
               }
             }
@@ -199,7 +195,6 @@ const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value
   };
 
   const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
-    try { console.log('[DBG] Filter focus', _column.accessorKey, (e.target as HTMLInputElement).value); } catch {}
     setIsFocused(true);
     lastFocusedRef.current = e.target as HTMLInputElement;
     lastFocusedColumnRef.current = _column.accessorKey;
@@ -207,7 +202,6 @@ const ColumnFilterInput: React.FC<ColumnFilterProps> = ({ column: _column, value
     try { (window as any).__lastFocusedFilterColumn = _column.accessorKey; } catch {}
   };
   const handleBlur = () => {
-    try { console.log('[DBG] Filter blur', _column.accessorKey, { fromDate, toDate, localValue }); } catch {}
     // Flush any pending debounced update so store receives the latest range
     // before we clear focus and potentially resync from props.
     try { debouncedRef.current.flush?.(); } catch {}
@@ -301,6 +295,7 @@ interface ReferenceCellProps {
 const ReferenceCell: React.FC<ReferenceCellProps> = ({ reference, productId, compatibilityCount, onReferenceClick }) => {
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent row selection
+    try { console.log('[DBG] ReferenceCell clicked', { reference, productId }); } catch {}
     onReferenceClick(productId);
   };
 
@@ -361,7 +356,11 @@ const TableRow: React.FC<TableRowProps> = ({
     }
     
     if (column.accessorKey === 'entryDate' || column.accessorKey === 'arrivageDate') {
-      return new Date(value).toLocaleDateString('fr-FR');
+      // If entryDate is missing, fall back to createdAt for display so users
+      // still see a meaningful date even for legacy rows that lack entryDate.
+      const v = value ?? (column.accessorKey === 'entryDate' ? (entry as any).createdAt : null);
+      if (!v) return '-';
+      return new Date(v).toLocaleDateString('fr-FR');
     }
     
     return String(value);
@@ -439,10 +438,7 @@ export const DataGrid: React.FC = () => {
   const tableRef = useRef<HTMLTableElement>(null);
   
   // Auto-fetch when filters or sort changes
-  // Debug: log renders and when fetch is triggered
-  try { console.log('[DBG] DataGrid render', { entriesLength: entries.length, filterCols: columnFilters.map((f) => f.column) }); } catch {}
   useEffect(() => {
-    try { console.log('[DBG] fetch triggered by columnFilters/sort change', { columnFilters, sortColumn, sortDirection }); } catch {}
     fetchEntries();
   }, [columnFilters, sortColumn, sortDirection, fetchEntries]);
 
@@ -742,7 +738,7 @@ export const DataGrid: React.FC = () => {
             ) : (
               entries.map((entry, index) => (
                 <TableRow
-                  key={entry.id}
+                  key={entry.id ?? `entry-${index}`}
                   entry={entry}
                   columns={columns}
                   isSelected={entry.id === selectedEntryId}

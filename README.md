@@ -42,9 +42,6 @@ src/
 # Installer les dépendances
 npm install
 
-# Générer le client Prisma
-npm run prisma:generate
-
 # Lancer en mode développement
 npm run electron:dev
 

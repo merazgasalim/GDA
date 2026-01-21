@@ -883,8 +883,8 @@ const Step2FieldMapping: React.FC<Step2Props> = ({
           >
             <option value="">-- Sélectionner --</option>
             {state.existingSuppliers.length > 0 ? (
-              state.existingSuppliers.map((s) => (
-                <option key={s} value={s}>{s}</option>
+              state.existingSuppliers.map((s, idx) => (
+                <option key={`${String(s ?? '')}-${idx}`} value={s ?? ''}>{s ?? '(inconnu)'}</option>
               ))
             ) : (
               <option value="" disabled>Aucun fournisseur existant</option>

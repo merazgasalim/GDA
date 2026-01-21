@@ -162,6 +162,7 @@ export const CreatePriceEntrySchema = z.object({
   price: z.number().positive('Price must be positive'),
   currency: z.string().default('DZD'),
   arrivageDate: z.date().optional().nullable(),
+  entryDate: z.date().optional(),
   notes: z.string().optional().nullable(),
 });
 

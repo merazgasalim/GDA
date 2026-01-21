@@ -26,6 +26,7 @@ import {
   createEntriesBatch,
   getStats,
   getDistinctValues,
+  isDatabaseInitialized,
 } from './services/database-service';
 import {
   parseClipboardText,
@@ -181,6 +182,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow | null): void {
 
   ipcMain.handle(IPC_CHANNELS.DB_GET_STATS, async () => {
     try {
+      // If DB is not initialized (e.g., license required), return safe defaults
+      if (!isDatabaseInitialized()) {
+        return {
+          totalEntries: 0,
+          uniqueReferences: 0,
+          uniqueSuppliers: 0,
+          uniqueBrands: 0,
+          lastEntryDate: null,
+          oldestEntryDate: null,
+        };
+      }
       return await getStats();
     } catch (error) {
       throw new Error(sanitizeError(error));

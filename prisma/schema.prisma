@@ -1,10 +1,6 @@
-generator client {
-  provider = "prisma-client-js"
-}
-
 datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
+  // url now set in prisma.config.ts for Prisma 7.x
 }
 
 /// Main price entry table - DENORMALIZED BY DESIGN

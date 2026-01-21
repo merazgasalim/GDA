@@ -348,6 +348,7 @@ function importRowToEntry(row: ImportRow): CreatePriceEntry {
     price: row.price,
     currency: 'DZD', // Default currency
     arrivageDate: row.arrivageDate ? new Date(row.arrivageDate) : null,
+    entryDate: row.arrivageDate ? new Date(row.arrivageDate) : new Date(),
     notes: row.notes || null,
   };
 }
@@ -849,22 +850,51 @@ export async function analyzeForDuplicates(
   const duplicateRows: DuplicateInfo[] = [];
   const normalizedSupplier = supplierName.trim().toLowerCase();
 
-  for (const validRow of validRows) {
-    const key = `${validRow.reference}|${normalizedSupplier}`;
-    const existingEntry = existingEntriesMap.get(key);
+  try {
+    for (const validRow of validRows) {
+      const key = `${validRow.reference}|${normalizedSupplier}`;
+      // Defensive: existingEntriesMap should be a Map, but guard against unexpected shapes
+      const existingEntry = (existingEntriesMap && typeof (existingEntriesMap as any).get === 'function')
+        ? (existingEntriesMap as any).get(key)
+        : undefined;
 
-    if (existingEntry) {
-      duplicateRows.push({
-        rowIndex: validRow.rowIndex,
-        reference: validRow.reference,
-        existingEntryId: existingEntry.id,
-        existingPrice: existingEntry.price,
-        newPrice: validRow.price,
-        existingDate: existingEntry.entryDate,
-      });
-    } else {
-      newRows.push(validRow.rowIndex);
+      if (existingEntry) {
+        duplicateRows.push({
+          rowIndex: validRow.rowIndex,
+          reference: validRow.reference,
+          existingEntryId: existingEntry?.id ?? null,
+          existingPrice: existingEntry?.price ?? null,
+          newPrice: validRow.price,
+          existingDate: existingEntry?.entryDate ?? null,
+        });
+      } else {
+        // Log unexpected missing map entries prominently for debugging in dev
+        try {
+          console.error('[ImportService] analyzeForDuplicates: no existing entry for key', key, 'mapSize=', existingEntriesMap && typeof (existingEntriesMap as any).size !== 'undefined' ? (existingEntriesMap as any).size : 'unknown');
+          console.error('[ImportService] existingEntriesMap (sample):', existingEntriesMap && typeof (existingEntriesMap as any).get === 'function' ? Array.from((existingEntriesMap as any).entries()).slice(0,5) : existingEntriesMap);
+        } catch (e) {
+          // ignore logging failures
+        }
+        newRows.push(validRow.rowIndex);
+      }
     }
+  } catch (err) {
+    console.error('[ImportService] analyzeForDuplicates: unexpected error iterating validRows', err, { validRowsLength: validRows.length, existingEntriesMapType: typeof existingEntriesMap });
+    // Fail-safe: treat everything as new to avoid blocking import
+    return {
+      newRows: validRows.map(v => v.rowIndex),
+      duplicateRows: [],
+      invalidRows,
+      intraCsvDuplicates,
+      summary: {
+        totalRows: parsedData.rows.length,
+        newCount: validRows.length,
+        duplicateCount: 0,
+        invalidCount: invalidRows.length,
+        intraCsvDuplicateCount: intraCsvDuplicates.reduce((sum, d) => sum + d.rowIndices.length, 0),
+      },
+      requiresStrategySelection: false,
+    } as DuplicateAnalysisResult;
   }
 
   const result: DuplicateAnalysisResult = {
@@ -1103,6 +1133,7 @@ export async function executeCSVImport(
         price: price || 0,
         currency: 'DZD',
         arrivageDate: importDate ? new Date(importDate) : null,
+        entryDate: importDate ? new Date(importDate) : new Date(),
         notes: null,
       });
     }
