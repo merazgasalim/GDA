@@ -49,6 +49,12 @@ function getDatabasePath(): string {
   if (dbUrl && dbUrl.startsWith('file:')) {
     return dbUrl.replace('file:', '').replace(/"/g, '');
   }
+  // In packaged apps writing into the asar or application folder is not possible,
+  // so store the DB in the user's appData directory. During development we
+  // continue to use the repo's prisma/dev.db for convenience.
+  if (app.isPackaged) {
+    return path.join(dbDir, 'app.db');
+  }
   return path.resolve(__dirname, '..', '..', '..', 'prisma', 'dev.db');
 }
 async function initializeDatabase(): Promise<{ success: boolean; error?: string }> {

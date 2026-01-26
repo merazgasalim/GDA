@@ -24,6 +24,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 const require$$1 = require("electron");
 const path$m = require("path");
+const url = require("url");
 const require$$0$2 = require("fs");
 const Client = require("better-sqlite3");
 const crypto$2 = require("crypto");
@@ -20689,16 +20690,16 @@ function getAppleModel(key) {
     version: list[0].name + " (" + features.join(", ") + ")"
   };
 }
-function checkWebsite(url, timeout2 = 5e3) {
-  const http2 = url.startsWith("https:") || url.indexOf(":443/") > 0 || url.indexOf(":8443/") > 0 ? require$$5$1 : require$$6;
+function checkWebsite(url2, timeout2 = 5e3) {
+  const http2 = url2.startsWith("https:") || url2.indexOf(":443/") > 0 || url2.indexOf(":8443/") > 0 ? require$$5$1 : require$$6;
   const t2 = Date.now();
   return new Promise((resolve2) => {
-    const request = http2.get(url, (res) => {
+    const request = http2.get(url2, (res) => {
       res.on("data", () => {
       });
       res.on("end", () => {
         resolve2({
-          url,
+          url: url2,
           statusCode: res.statusCode,
           message: res.statusMessage,
           time: Date.now() - t2
@@ -20706,7 +20707,7 @@ function checkWebsite(url, timeout2 = 5e3) {
       });
     }).on("error", (e) => {
       resolve2({
-        url,
+        url: url2,
         statusCode: 404,
         message: e.message,
         time: Date.now() - t2
@@ -20714,7 +20715,7 @@ function checkWebsite(url, timeout2 = 5e3) {
     }).setTimeout(timeout2, () => {
       request.destroy();
       resolve2({
-        url,
+        url: url2,
         statusCode: 408,
         message: "Request Timeout",
         time: Date.now() - t2
@@ -32317,23 +32318,23 @@ const _freebsd$4 = _platform$5 === "freebsd";
 const _openbsd$4 = _platform$5 === "openbsd";
 const _netbsd$4 = _platform$5 === "netbsd";
 const _sunos$4 = _platform$5 === "sunos";
-function inetChecksite(url, callback) {
+function inetChecksite(url2, callback) {
   return new Promise((resolve2) => {
     process.nextTick(() => {
       let result2 = {
-        url,
+        url: url2,
         ok: false,
         status: 404,
         ms: null
       };
-      if (typeof url !== "string") {
+      if (typeof url2 !== "string") {
         if (callback) {
           callback(result2);
         }
         return resolve2(result2);
       }
       let urlSanitized = "";
-      const s = util$o.sanitizeShellString(url, true);
+      const s = util$o.sanitizeShellString(url2, true);
       const l = util$o.mathMin(s.length, 2e3);
       for (let i = 0; i <= l; i++) {
         if (s[i] !== void 0) {
@@ -36752,6 +36753,9 @@ function getDatabasePath() {
   const dbUrl = process.env.DATABASE_URL;
   if (dbUrl && dbUrl.startsWith("file:")) {
     return dbUrl.replace("file:", "").replace(/"/g, "");
+  }
+  if (require$$1.app.isPackaged) {
+    return path$m.join(dbDir, "app.db");
   }
   return path$m.resolve(__dirname, "..", "..", "..", "prisma", "dev.db");
 }
@@ -97936,9 +97940,9 @@ function parse_URLMoniker(blob2) {
     if (blob2.read_shift(16) === "795881f43b1d7f48af2c825dc4852763") extra = true;
     blob2.l = start;
   }
-  var url = blob2.read_shift((extra ? len - 24 : len) >> 1, "utf16le").replace(chr0, "");
+  var url2 = blob2.read_shift((extra ? len - 24 : len) >> 1, "utf16le").replace(chr0, "");
   if (extra) blob2.l += 24;
-  return url;
+  return url2;
 }
 function parse_FileMoniker(blob2) {
   var cAnti = blob2.read_shift(2);
@@ -117972,8 +117976,8 @@ function validateEmail(email, strict = false) {
 }
 const URL_REGEX = /^https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,63}\b(?:[-a-zA-Z0-9()@:%_+.~#?&/=]*)$/;
 const SIMPLE_URL_REGEX = /^https?:\/\/.+\..+/;
-function normalizeUrl(url) {
-  let trimmed = url.trim();
+function normalizeUrl(url2) {
+  let trimmed = url2.trim();
   if (trimmed && !trimmed.match(/^https?:\/\//i)) {
     trimmed = "https://" + trimmed;
   }
@@ -117982,8 +117986,8 @@ function normalizeUrl(url) {
   }
   return trimmed;
 }
-function validateUrl(url, strict = false) {
-  const trimmed = url.trim();
+function validateUrl(url2, strict = false) {
+  const trimmed = url2.trim();
   if (!trimmed) {
     return { isValid: true, normalizedValue: "" };
   }
@@ -120660,8 +120664,8 @@ require$$1.app.on("web-contents-created", (_event, contents) => {
       require$$1.shell.openExternal(navigationUrl);
     }
   });
-  contents.setWindowOpenHandler(({ url }) => {
-    require$$1.shell.openExternal(url);
+  contents.setWindowOpenHandler(({ url: url2 }) => {
+    require$$1.shell.openExternal(url2);
     return { action: "deny" };
   });
 });
@@ -120705,12 +120709,32 @@ async function createWindow() {
     await exports.mainWindow.loadURL(VITE_DEV_SERVER_URL);
     exports.mainWindow.webContents.openDevTools();
   } else {
-    const indexPath = path$m.join(require$$1.app.getAppPath(), "dist", "index.html");
-    if (!require$$0$2.existsSync(indexPath)) {
-      console.error("Renderer index.html not found at", indexPath);
-      await exports.mainWindow.loadFile(path$m.join(__dirname, "../dist/index.html"));
-    } else {
-      await exports.mainWindow.loadFile(indexPath);
+    const candidates = [
+      path$m.join(__dirname, "../dist/index.html"),
+      path$m.join(require$$1.app.getAppPath(), "dist", "index.html"),
+      path$m.join(process.resourcesPath, "app.asar", "dist", "index.html"),
+      path$m.join(process.resourcesPath, "dist", "index.html")
+    ];
+    let loaded = false;
+    for (const p of candidates) {
+      if (require$$0$2.existsSync(p)) {
+        try {
+          await exports.mainWindow.loadURL(url.pathToFileURL(p).toString());
+          loaded = true;
+          break;
+        } catch (err2) {
+          console.error("Failed to load renderer from", p, err2);
+        }
+      }
+    }
+    if (!loaded) {
+      const indexPath = path$m.join(require$$1.app.getAppPath(), "dist", "index.html");
+      console.error("Renderer index.html not found in candidates, trying", indexPath);
+      if (require$$0$2.existsSync(indexPath)) {
+        await exports.mainWindow.loadURL(url.pathToFileURL(indexPath).toString());
+      } else {
+        await exports.mainWindow.loadURL(url.pathToFileURL(path$m.join(__dirname, "../dist/index.html")).toString());
+      }
     }
   }
   exports.mainWindow.on("closed", () => {

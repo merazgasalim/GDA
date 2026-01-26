@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "Application de gestion des arrivages pour professionnels de pièces auto - Suivi des prix et historique",
   "main": "out/main/index.js",
-  "author": "Your Company",
-  "license": "UNLICENSED",
+  "author": "MeraPub",
+  "license": "Apache-2.0",
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
@@ -61,19 +61,33 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "asar": false,
-    "appId": "com.yourcompany.gestiondesarrivages",
+    "asar": true,
+    "appId": "com.merapub.gestiondesarrivages",
     "productName": "Gestion des Arrivages",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "release"
     },
+    "npmRebuild": false,
+    "compression": "maximum",
     "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
       "out/**/*",
-      "prisma/**"
+      "dist/**/*",
+      "!**/*.map",
+      "!.github/**",
+      "!src/**",
+      "!**/__tests__/**",
+      "!**/test/**",
+      "!**/tests/**",
+      "!**/examples/**",
+      "!**/docs/**",
+      "!**/coverage/**",
+      "!**/*.ts"
     ],
-    "asarUnpack": [],
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/better-sqlite3/**"
+    ],
     "win": {
       "target": [
         "nsis"

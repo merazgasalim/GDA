@@ -18,6 +18,7 @@
 
 import { app, BrowserWindow, shell } from 'electron';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import fs from 'fs';
 import { registerIpcHandlers, unregisterIpcHandlers } from './ipc-handlers';
 import { initializeDatabase, closeDatabase } from './services/database-service';
@@ -107,16 +108,40 @@ async function createWindow(): Promise<void> {
     // Open DevTools in development
     mainWindow.webContents.openDevTools();
   } else {
-    // In packaged apps __dirname may point inside the asar archive.
-    // Use app.getAppPath() to resolve the effective application root which
-    // works whether the app is packaged in an asar or run from source.
-    const indexPath = path.join(app.getAppPath(), 'dist', 'index.html');
-    if (!fs.existsSync(indexPath)) {
-      console.error('Renderer index.html not found at', indexPath);
-      // Fallback to previous behavior for diagnostics
-      await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-    } else {
-      await mainWindow.loadFile(indexPath);
+    // Resolve index.html from several candidate locations. In packaged apps
+    // files may live inside the ASAR archive or next to the unpacked files.
+    // Prefer a path relative to __dirname because Electron knows how to
+    // load from inside an asar when given a __dirname-relative path.
+    const candidates = [
+      path.join(__dirname, '../dist/index.html'),
+      path.join(app.getAppPath(), 'dist', 'index.html'),
+      path.join(process.resourcesPath, 'app.asar', 'dist', 'index.html'),
+      path.join(process.resourcesPath, 'dist', 'index.html'),
+    ];
+
+    let loaded = false;
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        try {
+          await mainWindow.loadURL(pathToFileURL(p).toString());
+          loaded = true;
+          break;
+        } catch (err) {
+          console.error('Failed to load renderer from', p, err);
+        }
+      }
+    }
+
+    if (!loaded) {
+      // Last-resort: try the previous behavior (diagnostic)
+      const indexPath = path.join(app.getAppPath(), 'dist', 'index.html');
+      console.error('Renderer index.html not found in candidates, trying', indexPath);
+      if (fs.existsSync(indexPath)) {
+        await mainWindow.loadURL(pathToFileURL(indexPath).toString());
+      } else {
+        // If still missing, try the sibling path relative to __dirname
+        await mainWindow.loadURL(pathToFileURL(path.join(__dirname, '../dist/index.html')).toString());
+      }
     }
   }
 
